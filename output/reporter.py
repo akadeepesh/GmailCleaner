@@ -22,6 +22,7 @@ from rich import box
 from rich.text import Text
 
 from engines.unsubscribe import UnsubscribeCandidate
+from engines.bulk_cleanup import CleanupGroup
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ def generate_report(
     run_id: str,
     emails_scanned: int,
     unsubscribe_candidates: list[UnsubscribeCandidate],
+    cleanup_groups: Optional[list[CleanupGroup]] = None,
     dry_run: bool = True,
     output_path: str = PENDING_ACTIONS_PATH,
 ) -> dict:
@@ -49,13 +51,15 @@ def generate_report(
         run_id:                  Unique identifier for this run.
         emails_scanned:          Total emails processed in the scan.
         unsubscribe_candidates:  Candidates from the unsubscribe engine.
+        cleanup_groups:          Groups from the bulk cleanup engine.
         dry_run:                 Whether this is a dry-run (no execute will follow).
         output_path:             Path to write pending_actions.json.
 
     Returns:
         The report dict (same content as written to disk).
     """
-    report = _build_report(run_id, emails_scanned, unsubscribe_candidates, dry_run)
+    report = _build_report(run_id, emails_scanned, unsubscribe_candidates,
+                           cleanup_groups or [], dry_run)
     _write_json(report, output_path)
     _print_console_report(report, dry_run)
     return report
@@ -88,6 +92,7 @@ def _build_report(
     run_id: str,
     emails_scanned: int,
     unsubscribe_candidates: list[UnsubscribeCandidate],
+    cleanup_groups: list[CleanupGroup],
     dry_run: bool,
 ) -> dict:
     now = datetime.now(timezone.utc).isoformat()
@@ -105,10 +110,30 @@ def _build_report(
             "mailto": c.unsubscribe.mailto,
             "supports_one_click": c.unsubscribe.supports_one_click,
             "sample_message_ids": c.sample_message_ids,
-            "confirmed": False,  # User sets this to true before running --execute
+            "confirmed": False,
         }
         for c in unsubscribe_candidates
         if not c.already_unsubscribed
+    ]
+
+    delete_group_items = [
+        {
+            "group_id": g.group_id,
+            "group_type": g.group_type,
+            "label": g.label,
+            "domain": g.domain,
+            "email_count": g.email_count,
+            "oldest_date": g.oldest_date,
+            "newest_date": g.newest_date,
+            "all_unread": g.all_unread,
+            "has_unsubscribe": g.has_unsubscribe,
+            "score": round(g.score, 3),
+            "score_label": g.score_label,
+            "sample_subjects": g.sample_subjects,
+            "message_ids": g.message_ids,
+            "confirmed": False,
+        }
+        for g in cleanup_groups
     ]
 
     return {
@@ -118,11 +143,14 @@ def _build_report(
         "summary": {
             "emails_scanned": emails_scanned,
             "unsubscribe_candidates": len(unsubscribe_items),
+            "cleanup_groups": len(delete_group_items),
+            "cleanup_emails_total": sum(g["email_count"] for g in delete_group_items),
         },
         "unsubscribe": unsubscribe_items,
+        "delete_groups": delete_group_items,
         "_instructions": (
             "To confirm actions: set 'confirmed': true on each item you want to execute, "
-            "then run: python main.py --execute --session output/pending_actions.json"
+            "then run: python main.py execute --session output/pending_actions.json"
         ),
     }
 
@@ -142,7 +170,6 @@ def _print_console_report(report: dict, dry_run: bool) -> None:
     """Print a structured summary to the terminal using Rich."""
     console.print()
 
-    # Header
     mode_label = "[yellow]DRY RUN[/yellow]" if dry_run else "[green]SCAN COMPLETE[/green]"
     console.print(
         Panel(
@@ -153,14 +180,14 @@ def _print_console_report(report: dict, dry_run: bool) -> None:
         )
     )
 
-    # Summary row
     summary = report["summary"]
     console.print()
     console.print(f"  [dim]Emails scanned:[/dim]          [bold]{summary['emails_scanned']:,}[/bold]")
     console.print(f"  [dim]Unsubscribe candidates:[/dim]  [bold]{summary['unsubscribe_candidates']}[/bold]")
+    console.print(f"  [dim]Cleanup groups:[/dim]          [bold]{summary['cleanup_groups']}[/bold]"
+                  f"  [dim]({summary['cleanup_emails_total']:,} emails)[/dim]")
     console.print()
 
-    # Unsubscribe candidates table
     unsubscribe_items = report.get("unsubscribe", [])
     if unsubscribe_items:
         _print_unsubscribe_table(unsubscribe_items)
@@ -168,14 +195,20 @@ def _print_console_report(report: dict, dry_run: bool) -> None:
         console.print("  [dim]No new unsubscribe candidates found.[/dim]")
         console.print()
 
-    # Footer instructions
+    delete_groups = report.get("delete_groups", [])
+    if delete_groups:
+        _print_cleanup_table(delete_groups)
+    else:
+        console.print("  [dim]No bulk cleanup groups found.[/dim]")
+        console.print()
+
     if dry_run:
         console.print(
             Panel(
                 "[bold]Next steps[/bold]\n\n"
                 f"  1. Open [cyan]output/pending_actions.json[/cyan]\n"
-                f'  2. Set [cyan]"confirmed": true[/cyan] on the senders you want to unsubscribe from\n'
-                f"  3. Run: [bold green]python main.py --execute --session output/pending_actions.json[/bold green]",
+                f'  2. Set [cyan]"confirmed": true[/cyan] on each item you want to action\n'
+                f"  3. Run: [bold green]python main.py execute --session output/pending_actions.json[/bold green]",
                 border_style="dim",
                 padding=(1, 4),
             )
@@ -192,7 +225,7 @@ def _print_unsubscribe_table(items: list[dict]) -> None:
         padding=(0, 1),
         title="[bold]Unsubscribe Candidates[/bold]",
         title_style="bold white",
-        caption=f"{len(items)} sender(s) found — review and confirm in pending_actions.json",
+        caption=f"{len(items)} sender(s) — review and confirm in pending_actions.json",
         caption_style="dim",
     )
 
@@ -219,6 +252,57 @@ def _print_unsubscribe_table(items: list[dict]) -> None:
             item["most_recent_date"],
             method_styled,
             f"[dim]{item['representative_subject'][:60]}[/dim]",
+        )
+
+    console.print(table)
+    console.print()
+
+
+def _print_cleanup_table(items: list[dict]) -> None:
+    table = Table(
+        box=box.ROUNDED,
+        border_style="dark_orange",
+        header_style="bold yellow",
+        show_lines=True,
+        padding=(0, 1),
+        title="[bold]Bulk Cleanup Groups[/bold]",
+        title_style="bold white",
+        caption=f"{len(items)} group(s) — review and confirm in pending_actions.json",
+        caption_style="dim",
+    )
+
+    table.add_column("#", style="dim", width=4, justify="right")
+    table.add_column("Group", min_width=28)
+    table.add_column("Emails", width=8, justify="right")
+    table.add_column("Oldest", width=12)
+    table.add_column("Risk", width=8)
+    table.add_column("Flags", width=20)
+    table.add_column("Sample Subjects", min_width=30, overflow="fold")
+
+    SCORE_COLORS = {"high": "red", "medium": "yellow", "low": "green"}
+
+    for i, item in enumerate(items, start=1):
+        score_label = item["score_label"]
+        score_colored = f"[{SCORE_COLORS[score_label]}]{score_label.upper()}[/{SCORE_COLORS[score_label]}]"
+
+        flags = []
+        if item["all_unread"]:
+            flags.append("[dim]never opened[/dim]")
+        if item["has_unsubscribe"]:
+            flags.append("[dim]promotional[/dim]")
+
+        type_icon = "🏷" if item["group_type"] == "domain" else "📄"
+        subjects_preview = " · ".join(item["sample_subjects"][:2])
+
+        table.add_row(
+            str(i),
+            f"{type_icon} [bold]{item['label'][:36]}[/bold]\n"
+            f"[dim]{item['group_type']} group[/dim]",
+            str(item["email_count"]),
+            item["oldest_date"],
+            score_colored,
+            "\n".join(flags) if flags else "[dim]—[/dim]",
+            f"[dim]{subjects_preview[:60]}[/dim]",
         )
 
     console.print(table)
