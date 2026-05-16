@@ -1,0 +1,69 @@
+# GmailCleaner Configuration
+# All values here are defaults. Override per your needs.
+
+scan:
+  # Maximum number of emails to fetch per run.
+  # Increase carefully — higher values consume more Gmail API quota.
+  max_emails: 500
+
+  # How far back to scan (in days). Emails older than this are ignored.
+  lookback_days: 30
+
+  # Gmail query filter applied on top of lookback. Standard Gmail search syntax.
+  # Default: inbox only, exclude trash and spam.
+  query_filter: "in:inbox -in:trash -in:spam"
+
+unsubscribe:
+  # Whether to run the unsubscribe detection engine.
+  enabled: true
+
+  # Minimum number of emails from a sender domain before it appears as a candidate.
+  # Prevents flagging a domain you received a single email from.
+  min_email_count: 2
+
+bulk_cleanup:
+  # Whether to run the bulk cleanup detection engine.
+  enabled: true
+
+  # Minimum emails in a group before it is surfaced as a cleanup candidate.
+  min_group_size: 5
+
+triage:
+  # Whether to run AI-powered triage (Phase 3 — requires Gemini API key).
+  enabled: false
+  model: gemini-1.5-flash
+
+  # Confidence threshold below which a classification is flagged for manual review.
+  confidence_threshold: 0.75
+
+digest:
+  # Whether to send a daily digest email (Phase 3).
+  enabled: false
+  send_time: "07:00"
+  recipient: ""
+
+# MASTER SAFETY SWITCH.
+# When true: GmailCleaner only produces reports and pending_actions.json.
+# No emails are deleted or unsubscribed without explicit --execute confirmation.
+# Set to false only if you have configured trusted_rules below and accept the risk.
+confirm_first: true
+
+# Senders / domains GmailCleaner is allowed to act on without confirmation.
+# Only used when confirm_first is false.
+trusted_rules: []
+
+# Senders / domains GmailCleaner will never touch, regardless of any other setting.
+blocked_senders: []
+
+database:
+  # Path to the SQLite database file.
+  # Relative to the project root.
+  path: "data/gmailcleaner.db"
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+
+  # Whether to write logs to a file in addition to stdout.
+  file_enabled: false
+  file_path: "logs/gmailcleaner.log"
