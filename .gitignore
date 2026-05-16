@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# GmailCleaner secrets — NEVER commit these
+config/credentials.json
+config/token.json
+.env
+
+# GmailCleaner runtime data
+data/
+output/pending_actions.json
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docker
+*.dockerignore
+
+# Empty files created while creating stucture
+ai/gemini.py
+deploy/cloudbuild.yaml
+deploy/Dockerfile
+deploy/scheduler.sh
+engines/bulk_cleanup.py
+engines/digest.py
+engines/triage.py
