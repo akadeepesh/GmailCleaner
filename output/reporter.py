@@ -130,7 +130,7 @@ def _build_report(
 def _write_json(report: dict, output_path: str) -> None:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Pending actions written to %s", output_path)
 
 

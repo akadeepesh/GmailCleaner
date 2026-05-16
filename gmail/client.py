@@ -126,11 +126,12 @@ class GmailClient:
         metadata_headers: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
         """
-        Fetch multiple messages using the Google API batch HTTP mechanism.
+        Fetch multiple messages using the Google API batch HTTP mechanism,
+        with exponential backoff retry on 429 rate-limit responses.
 
-        Gmail API does not support true batch metadata fetches (unlike Sheets),
-        so this uses concurrent individual requests via a batch HTTP request object,
-        which reduces TCP overhead significantly vs sequential individual calls.
+        Batch size is kept at 25 (well below the API max of 100) to avoid
+        triggering the "Too many concurrent requests" per-user rate limit.
+        A short sleep between batches gives the API quota time to recover.
 
         Args:
             message_ids:      List of Gmail message IDs to fetch.
@@ -140,45 +141,96 @@ class GmailClient:
         Returns:
             List of raw API message resources in the same order as message_ids.
         """
+        import time
+
         results: dict[str, Any] = {}
-        errors: list[str] = []
 
-        def _callback(request_id: str, response: Any, exception: Any) -> None:
-            if exception:
-                logger.warning("Batch get failed for message %s: %s", request_id, exception)
-                errors.append(request_id)
-            else:
-                results[request_id] = response
+        # Reduced from 100 to 25 to stay within Gmail's per-user concurrency limit.
+        BATCH_SIZE = 25
+        # Polite pause between successful batches.
+        INTER_BATCH_DELAY = 0.5
+        # Retry config for 429 responses.
+        MAX_RETRIES = 4
+        BASE_BACKOFF = 2.0  # seconds; doubles each attempt
 
-        # Google API batches max 100 requests.
-        BATCH_SIZE = 100
-        for chunk_start in range(0, len(message_ids), BATCH_SIZE):
-            chunk = message_ids[chunk_start : chunk_start + BATCH_SIZE]
-            batch = self._service.new_batch_http_request(callback=_callback)
+        total_chunks = (len(message_ids) + BATCH_SIZE - 1) // BATCH_SIZE
 
-            for msg_id in chunk:
-                kwargs: dict[str, Any] = {
-                    "userId": self._user_id,
-                    "id": msg_id,
-                    "format": format,
-                }
-                if format == "metadata" and metadata_headers:
-                    kwargs["metadataHeaders"] = metadata_headers
-                batch.add(
-                    self._service.users().messages().get(**kwargs),
-                    request_id=msg_id,
+        for chunk_index, chunk_start in enumerate(range(0, len(message_ids), BATCH_SIZE)):
+            chunk = message_ids[chunk_start: chunk_start + BATCH_SIZE]
+            failed_ids: list[str] = list(chunk)
+
+            for attempt in range(1, MAX_RETRIES + 1):
+                if not failed_ids:
+                    break
+
+                attempt_results: dict[str, Any] = {}
+                attempt_errors: list[str] = []
+
+                def _make_callback(
+                    _attempt_results: dict, _attempt_errors: list
+                ):
+                    def _callback(request_id: str, response: Any, exception: Any) -> None:
+                        if exception:
+                            if (
+                                isinstance(exception, HttpError)
+                                and exception.resp.status == 429
+                            ):
+                                _attempt_errors.append(request_id)
+                            else:
+                                logger.warning(
+                                    "Batch get non-retriable error for %s: %s",
+                                    request_id, exception,
+                                )
+                        else:
+                            _attempt_results[request_id] = response
+                    return _callback
+
+                batch = self._service.new_batch_http_request(
+                    callback=_make_callback(attempt_results, attempt_errors)
+                )
+                for msg_id in failed_ids:
+                    kwargs: dict[str, Any] = {
+                        "userId": self._user_id,
+                        "id": msg_id,
+                        "format": format,
+                    }
+                    if format == "metadata" and metadata_headers:
+                        kwargs["metadataHeaders"] = metadata_headers
+                    batch.add(
+                        self._service.users().messages().get(**kwargs),
+                        request_id=msg_id,
+                    )
+
+                batch.execute()
+                results.update(attempt_results)
+
+                if attempt_errors:
+                    backoff = BASE_BACKOFF * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Rate limited on %d message(s) in batch %d/%d "
+                        "(attempt %d/%d). Retrying in %.1fs...",
+                        len(attempt_errors), chunk_index + 1, total_chunks,
+                        attempt, MAX_RETRIES, backoff,
+                    )
+                    time.sleep(backoff)
+                    failed_ids = attempt_errors
+                else:
+                    failed_ids = []
+
+            if failed_ids:
+                logger.error(
+                    "Giving up on %d message(s) after %d attempts: %s",
+                    len(failed_ids), MAX_RETRIES, failed_ids,
                 )
 
-            batch.execute()
             logger.debug(
-                "Batch chunk %d–%d: fetched %d, failed %d",
-                chunk_start,
-                chunk_start + len(chunk),
-                len(results),
-                len(errors),
+                "Batch %d/%d complete: %d total fetched so far",
+                chunk_index + 1, total_chunks, len(results),
             )
 
-        # Return in original order; missing (errored) messages are silently omitted.
+            if chunk_start + BATCH_SIZE < len(message_ids):
+                time.sleep(INTER_BATCH_DELAY)
+
         return [results[mid] for mid in message_ids if mid in results]
 
     # ── Message mutation ──────────────────────────────────────────────────────
