@@ -62,9 +62,19 @@ CREATE TABLE IF NOT EXISTS runs (
     actions_failed      INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS triage_results (
+    message_id      TEXT PRIMARY KEY,
+    bucket          TEXT NOT NULL,   -- NEEDS_REPLY | FYI | PROMOTIONS | JUNK | UNCLASSIFIED
+    confidence      REAL NOT NULL,
+    reason          TEXT,
+    model           TEXT,
+    classified_at   TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_action_log_run_id ON action_log(run_id);
 CREATE INDEX IF NOT EXISTS idx_action_log_status ON action_log(status);
 CREATE INDEX IF NOT EXISTS idx_senders_unsubscribed ON senders(unsubscribed_at);
+CREATE INDEX IF NOT EXISTS idx_triage_classified_at ON triage_results(classified_at);
 """
 
 
@@ -280,6 +290,67 @@ class Database:
     def get_run_summary(self, run_id: str) -> Optional[dict]:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    # ── Triage results ────────────────────────────────────────────────────────
+
+    def save_triage_results(self, results: list[dict]) -> None:
+        """
+        Upsert triage classification results.
+
+        Each dict must have: message_id, bucket, confidence, reason, model.
+        Existing rows for the same message_id are overwritten (re-classification).
+        """
+        now = _utcnow()
+        with self.transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO triage_results (message_id, bucket, confidence, reason, model, classified_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    bucket        = excluded.bucket,
+                    confidence    = excluded.confidence,
+                    reason        = excluded.reason,
+                    model         = excluded.model,
+                    classified_at = excluded.classified_at
+                """,
+                [
+                    (
+                        r["message_id"],
+                        r["bucket"],
+                        r["confidence"],
+                        r.get("reason", ""),
+                        r.get("model", ""),
+                        now,
+                    )
+                    for r in results
+                ],
+            )
+        logger.debug("Saved %d triage result(s) to DB", len(results))
+
+    def get_recent_triage_results(self, hours: int = 24) -> list[dict]:
+        """
+        Return triage results classified within the last `hours` hours.
+        Used to avoid re-classifying messages on repeat scans the same day.
+        """
+        from datetime import timedelta
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM triage_results WHERE classified_at >= ?",
+                (cutoff,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_triage_result(self, message_id: str) -> Optional[dict]:
+        """Return the triage result for a single message, or None if not found."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM triage_results WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
         return dict(row) if row else None
 
 
