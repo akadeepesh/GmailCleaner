@@ -23,6 +23,7 @@ from rich.text import Text
 
 from engines.unsubscribe import UnsubscribeCandidate
 from engines.bulk_cleanup import CleanupGroup
+from engines.triage import TriageSummary
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ def generate_report(
     emails_scanned: int,
     unsubscribe_candidates: list[UnsubscribeCandidate],
     cleanup_groups: Optional[list[CleanupGroup]] = None,
+    triage_summary: Optional["TriageSummary"] = None,
     dry_run: bool = True,
     output_path: str = PENDING_ACTIONS_PATH,
 ) -> dict:
@@ -59,7 +61,7 @@ def generate_report(
         The report dict (same content as written to disk).
     """
     report = _build_report(run_id, emails_scanned, unsubscribe_candidates,
-                           cleanup_groups or [], dry_run)
+                           cleanup_groups or [], triage_summary, dry_run)
     _write_json(report, output_path)
     _print_console_report(report, dry_run)
     return report
@@ -93,6 +95,7 @@ def _build_report(
     emails_scanned: int,
     unsubscribe_candidates: list[UnsubscribeCandidate],
     cleanup_groups: list[CleanupGroup],
+    triage_summary: Optional["TriageSummary"],
     dry_run: bool,
 ) -> dict:
     now = datetime.now(timezone.utc).isoformat()
@@ -145,9 +148,14 @@ def _build_report(
             "unsubscribe_candidates": len(unsubscribe_items),
             "cleanup_groups": len(delete_group_items),
             "cleanup_emails_total": sum(g["email_count"] for g in delete_group_items),
+            "triage_needs_reply": len(triage_summary.needs_reply) if triage_summary else 0,
+            "triage_promotions": len(triage_summary.promotions) if triage_summary else 0,
+            "triage_junk": len(triage_summary.junk) if triage_summary else 0,
+            "triage_unclassified": len(triage_summary.unclassified) if triage_summary else 0,
         },
         "unsubscribe": unsubscribe_items,
         "delete_groups": delete_group_items,
+        "triage": _build_triage_section(triage_summary),
         "_instructions": (
             "To confirm actions: set 'confirmed': true on each item you want to execute, "
             "then run: python main.py execute --session output/pending_actions.json"
@@ -186,6 +194,12 @@ def _print_console_report(report: dict, dry_run: bool) -> None:
     console.print(f"  [dim]Unsubscribe candidates:[/dim]  [bold]{summary['unsubscribe_candidates']}[/bold]")
     console.print(f"  [dim]Cleanup groups:[/dim]          [bold]{summary['cleanup_groups']}[/bold]"
                   f"  [dim]({summary['cleanup_emails_total']:,} emails)[/dim]")
+    if summary.get("triage_needs_reply", 0) or summary.get("triage_promotions", 0):
+        console.print(f"  [dim]Triage:[/dim]                  "
+                      f"[red]{summary.get('triage_needs_reply',0)} reply[/red]  "
+                      f"[blue]{summary.get('triage_promotions',0)} promo[/blue]  "
+                      f"[dim]{summary.get('triage_junk',0)} junk  "
+                      f"{summary.get('triage_unclassified',0)} unclassified[/dim]")
     console.print()
 
     unsubscribe_items = report.get("unsubscribe", [])
@@ -201,6 +215,10 @@ def _print_console_report(report: dict, dry_run: bool) -> None:
     else:
         console.print("  [dim]No bulk cleanup groups found.[/dim]")
         console.print()
+
+    triage = report.get("triage", {})
+    if triage:
+        _print_triage_summary(triage)
 
     if dry_run:
         console.print(
@@ -304,6 +322,80 @@ def _print_cleanup_table(items: list[dict]) -> None:
             "\n".join(flags) if flags else "[dim]—[/dim]",
             f"[dim]{subjects_preview[:60]}[/dim]",
         )
+
+    console.print(table)
+    console.print()
+
+
+def _build_triage_section(triage_summary: Optional["TriageSummary"]) -> dict:
+    """Serialize triage summary into the report dict."""
+    if not triage_summary:
+        return {}
+
+    def _serialize(items) -> list[dict]:
+        return [
+            {
+                "message_id": r.message_id,
+                "bucket": r.bucket,
+                "confidence": round(r.confidence, 3),
+                "reason": r.reason,
+                "sender_name": r.sender_name,
+                "sender_email": r.sender_email,
+                "subject": r.subject,
+                "snippet": r.snippet[:120],
+                "date": r.date,
+                "is_unread": r.is_unread,
+                "low_confidence": r.low_confidence,
+            }
+            for r in items
+        ]
+
+    return {
+        "needs_reply": _serialize(triage_summary.needs_reply),
+        "fyi": _serialize(triage_summary.fyi),
+        "promotions": _serialize(triage_summary.promotions),
+        "junk": _serialize(triage_summary.junk),
+        "unclassified": _serialize(triage_summary.unclassified),
+    }
+
+
+def _print_triage_summary(summary: dict) -> None:
+    """Print a compact triage bucket summary to the console."""
+    from rich.table import Table
+    from rich import box
+
+    needs_reply = summary.get("needs_reply", [])
+    fyi = summary.get("fyi", [])
+    promotions = summary.get("promotions", [])
+    junk = summary.get("junk", [])
+    unclassified = summary.get("unclassified", [])
+
+    table = Table(
+        box=box.ROUNDED,
+        border_style="purple",
+        header_style="bold magenta",
+        show_lines=False,
+        padding=(0, 2),
+        title="[bold]AI Triage Results[/bold]",
+        title_style="bold white",
+    )
+
+    table.add_column("Bucket", min_width=18)
+    table.add_column("Count", width=8, justify="right")
+    table.add_column("Top items", min_width=40, overflow="fold")
+
+    def _top(items, n=3):
+        return "  ".join(
+            f"[dim]{item['sender_name'] or item['sender_email']}: {item['subject'][:35]}[/dim]"
+            for item in items[:n]
+        ) or "[dim]—[/dim]"
+
+    table.add_row("[red]✉ NEEDS REPLY[/red]",   str(len(needs_reply)),   _top(needs_reply))
+    table.add_row("[blue]📄 FYI[/blue]",          str(len(fyi)),          _top(fyi))
+    table.add_row("[yellow]🏷 PROMOTIONS[/yellow]", str(len(promotions)),   _top(promotions))
+    table.add_row("[dim]🗑 JUNK[/dim]",           str(len(junk)),          _top(junk))
+    if unclassified:
+        table.add_row("[purple]❓ UNCLASSIFIED[/purple]", str(len(unclassified)), _top(unclassified))
 
     console.print(table)
     console.print()

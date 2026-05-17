@@ -30,7 +30,10 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
 from auth.oauth import get_credentials
+from ai.gemini import GeminiClient
 from engines.bulk_cleanup import BulkCleanupEngine
+from engines.digest import DigestEngine
+from engines.triage import TriageEngine
 from engines.unsubscribe import UnsubscribeEngine
 from gmail.client import GmailClient
 from gmail.executor import ExecutionSummary, GmailExecutor
@@ -196,12 +199,56 @@ def scan(ctx: click.Context, dry_run: bool) -> None:
         )
         cleanup_groups = cleanup_engine.detect(messages)
 
+    # ── Triage engine ─────────────────────────────────────────────────────────
+    triage_summary = None
+    if cfg["triage"]["enabled"]:
+        gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        if not gemini_api_key:
+            logging.getLogger(__name__).warning(
+                "Triage enabled but GEMINI_API_KEY is not set — skipping triage."
+            )
+        else:
+            # Collect all message IDs already claimed by cleanup groups
+            # so the triage engine doesn't classify mail we plan to delete.
+            cleanup_claimed_ids: set[str] = set()
+            for group in cleanup_groups:
+                cleanup_claimed_ids.update(group.message_ids)
+
+            with GeminiClient(api_key=gemini_api_key, model=cfg["triage"]["model"]) as gemini:
+                triage_engine = TriageEngine(
+                    gemini_client=gemini,
+                    db=db,
+                    confidence_threshold=cfg["triage"]["confidence_threshold"],
+                )
+                triage_summary = triage_engine.classify(
+                    messages=messages,
+                    excluded_ids=cleanup_claimed_ids,
+                )
+
+    # ── Digest ────────────────────────────────────────────────────────────────
+    if cfg["digest"]["enabled"] and triage_summary is not None:
+        recipient = cfg["digest"].get("recipient", "")
+        if not recipient:
+            logging.getLogger(__name__).warning(
+                "Digest enabled but digest.recipient is not set in settings.yaml — skipping."
+            )
+        else:
+            digest_engine = DigestEngine(client=client, recipient=recipient)
+            digest_engine.send(
+                run_id=run_id,
+                emails_scanned=len(messages),
+                triage=triage_summary,
+                unsubscribe_candidates=unsubscribe_candidates,
+                cleanup_groups=cleanup_groups,
+            )
+
     # ── Report ────────────────────────────────────────────────────────────────
     generate_report(
         run_id=run_id,
         emails_scanned=len(messages),
         unsubscribe_candidates=unsubscribe_candidates,
         cleanup_groups=cleanup_groups,
+        triage_summary=triage_summary,
         dry_run=dry_run,
     )
 

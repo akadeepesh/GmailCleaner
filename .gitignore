@@ -40,8 +40,3 @@ htmlcov/
 
 # Docker
 *.dockerignore
-
-# Empty files created while creating stucture
-ai/gemini.py
-engines/digest.py
-engines/triage.py
