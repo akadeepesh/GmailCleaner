@@ -470,6 +470,65 @@ def _find_or_create_action(
     )
 
 
+# ── setup-watch ───────────────────────────────────────────────────────────────
+
+@cli.command("setup-watch")
+@click.pass_context
+def setup_watch(ctx: click.Context) -> None:
+    """
+    Register the Gmail Pub/Sub watch for real-time inbox notifications.
+
+    This must be run once after Phase 4 deployment, and then renewed
+    daily (Cloud Scheduler handles renewal automatically via /api/watch/renew).
+    """
+    cfg = ctx.obj["config"]
+    _print_banner()
+
+    topic = cfg.get("pubsub", {}).get("topic_name", "")
+    if not topic:
+        console.print("[red]✗ pubsub.topic_name is not set in config/settings.yaml[/red]")
+        sys.exit(1)
+
+    creds_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "config/credentials.json")
+    token_path  = os.getenv("GOOGLE_TOKEN_PATH", "config/token.json")
+
+    try:
+        creds = get_credentials(creds_path, token_path)
+    except FileNotFoundError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+    client = GmailClient(creds)
+    db     = Database(cfg["database"]["path"])
+
+    from pubsub.watcher import WatchManager
+    manager = WatchManager(client, db, topic_name=topic)
+
+    try:
+        reg = manager.register()
+        console.print(
+            Panel(
+                f"[bold green]✓ Gmail watch registered[/bold green]
+
+"
+                f"  Topic:      [cyan]{reg.topic_name}[/cyan]
+"
+                f"  historyId:  [dim]{reg.history_id}[/dim]
+"
+                f"  Expires:    [dim]{reg.expiration_ms}[/dim]",
+                border_style="green",
+                padding=(1, 4),
+            )
+        )
+        # Store baseline historyId so the first webhook call has a starting point.
+        db.save_history_id(reg.history_id)
+        console.print("  [dim]Baseline historyId saved to DB.[/dim]
+")
+    except RuntimeError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Entry
 # ──────────────────────────────────────────────────────────────────────────────
