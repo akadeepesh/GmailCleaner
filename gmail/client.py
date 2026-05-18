@@ -301,3 +301,102 @@ class GmailClient:
         except HttpError as exc:
             logger.error("Gmail API error on getProfile: %s", exc)
             raise
+
+    # ── Push notifications ────────────────────────────────────────────────────
+
+    def watch_inbox(
+        self,
+        topic_name: str,
+        label_ids: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """
+        Register a Gmail push watch on a Pub/Sub topic.
+
+        Gmail will publish a notification to the topic whenever a message
+        matching the label filter arrives. Returns a response containing
+        historyId (baseline) and expiration (epoch ms, ~7 days from now).
+
+        Args:
+            topic_name: Full Pub/Sub topic name, e.g.
+                        "projects/my-project/topics/gmail-cleaner"
+            label_ids:  Gmail label IDs to watch. Defaults to ["INBOX"].
+
+        Returns:
+            {"historyId": "...", "expiration": "..."}
+        """
+        body: dict[str, Any] = {
+            "topicName": topic_name,
+            "labelIds": label_ids or ["INBOX"],
+            "labelFilterBehavior": "INCLUDE",
+        }
+        try:
+            return self._service.users().watch(
+                userId=self._user_id, body=body
+            ).execute()
+        except HttpError as exc:
+            logger.error("Gmail API error on watch(): %s", exc)
+            raise
+
+    def stop_watch(self) -> None:
+        """Stop the Gmail push watch (unsubscribes from Pub/Sub notifications)."""
+        try:
+            self._service.users().stop(userId=self._user_id).execute()
+        except HttpError as exc:
+            logger.error("Gmail API error on stop(): %s", exc)
+            raise
+
+    def list_history(
+        self,
+        start_history_id: str,
+        history_types: Optional[list[str]] = None,
+        label_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch inbox history changes since a given historyId.
+
+        Uses users.history.list to return only the delta since the baseline —
+        far more efficient than a full inbox scan for real-time processing.
+
+        Args:
+            start_history_id: The historyId to start from (exclusive).
+                              Use the value returned by watch_inbox() as the baseline.
+            history_types:    Types of history to return. Defaults to ["messageAdded"].
+            label_id:         Filter to changes affecting a specific label.
+
+        Returns:
+            List of raw message resource dicts for messages added since the historyId.
+            Returns an empty list if there are no changes.
+        """
+        messages: list[dict[str, Any]] = []
+        page_token: Optional[str] = None
+        h_types = history_types or ["messageAdded"]
+
+        while True:
+            kwargs: dict[str, Any] = {
+                "userId": self._user_id,
+                "startHistoryId": start_history_id,
+                "historyTypes": h_types,
+            }
+            if label_id:
+                kwargs["labelId"] = label_id
+            if page_token:
+                kwargs["pageToken"] = page_token
+
+            try:
+                response = self._service.users().history().list(**kwargs).execute()
+            except HttpError as exc:
+                logger.error("Gmail API error on history.list: %s", exc)
+                raise
+
+            for history_record in response.get("history", []):
+                for added in history_record.get("messagesAdded", []):
+                    msg = added.get("message", {})
+                    if msg:
+                        messages.append(msg)
+
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+
+        logger.debug("list_history: %d message(s) since historyId=%s", len(messages), start_history_id)
+        return messages
