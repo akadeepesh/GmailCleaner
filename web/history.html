@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Run History — GmailCleaner{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Run History</h2>
+    <p>Recent scan and execute runs</p>
+</div>
+
+<div class="card">
+    {% if runs %}
+    <table>
+        <thead>
+            <tr>
+                <th>Run ID</th>
+                <th>Mode</th>
+                <th>Started</th>
+                <th>Duration</th>
+                <th>Scanned</th>
+                <th>Pending</th>
+                <th>Executed</th>
+                <th>Failed</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for run in runs %}
+            {% if run.completed_at and run.started_at %}
+            {% set started = run.started_at[:19] %}
+            {% set completed = run.completed_at[:19] %}
+            {% else %}
+            {% set started = run.started_at[:19] if run.started_at else '—' %}
+            {% set completed = '—' %}
+            {% endif %}
+            <tr>
+                <td class="mono" style="font-size:11px;color:var(--muted);">
+                    {{ run.id | truncate(28, killwords=True, end='…') }}
+                </td>
+                <td>
+                    {% if run.mode == 'scan' %}
+                    <span class="badge badge-blue">scan</span>
+                    {% elif run.mode == 'execute' %}
+                    <span class="badge badge-yellow">execute</span>
+                    {% else %}
+                    <span class="badge badge-muted">{{ run.mode }}</span>
+                    {% endif %}
+                </td>
+                <td class="muted" style="font-size:12px;">
+                    {{ started | replace('T', ' ') }}
+                </td>
+                <td class="muted" style="font-size:12px;">
+                    {% if run.completed_at and run.started_at %}
+                    —
+                    {% else %}
+                    running…
+                    {% endif %}
+                </td>
+                <td>{{ run.emails_scanned if run.emails_scanned else '—' }}</td>
+                <td>{{ run.actions_pending if run.actions_pending else '—' }}</td>
+                <td>
+                    {% if run.actions_executed %}
+                    <span style="color:var(--green);">{{ run.actions_executed }}</span>
+                    {% else %}—{% endif %}
+                </td>
+                <td>
+                    {% if run.actions_failed %}
+                    <span style="color:var(--red);">{{ run.actions_failed }}</span>
+                    {% else %}—{% endif %}
+                </td>
+                <td>
+                    {% if run.completed_at %}
+                    {% if run.actions_failed and run.actions_failed > 0 %}
+                    <span class="badge badge-yellow">partial</span>
+                    {% else %}
+                    <span class="badge badge-green">✓ done</span>
+                    {% endif %}
+                    {% else %}
+                    <span class="badge badge-muted">in progress</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="alert alert-info">
+        No runs recorded yet. Run <code>python main.py scan</code> to generate your first report.
+    </div>
+    {% endif %}
+</div>
+
+<!-- CLI quick reference -->
+<div class="card">
+    <div class="card-title">CLI Quick Reference</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Command</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>python main.py info</code></td>
+                <td class="muted">Check auth and config</td>
+            </tr>
+            <tr>
+                <td><code>python main.py scan</code></td>
+                <td class="muted">Dry-run scan — report only, no changes</td>
+            </tr>
+            <tr>
+                <td><code>python main.py scan --no-dry-run</code></td>
+                <td class="muted">Full scan — write pending_actions.json</td>
+            </tr>
+            <tr>
+                <td><code>python main.py execute</code></td>
+                <td class="muted">Execute confirmed actions from pending_actions.json</td>
+            </tr>
+            <tr>
+                <td><code>python main.py setup-watch</code></td>
+                <td class="muted">Register Gmail Pub/Sub watch</td>
+            </tr>
+            <tr>
+                <td><code>python -m gunicorn "web.app:create_app()" -b 0.0.0.0:8080</code></td>
+                <td class="muted">Start the dashboard server locally</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+{% endblock %}

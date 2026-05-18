@@ -1,0 +1,64 @@
+# GmailCleaner — Web Dashboard Cloud Run Service
+#
+# This is a PERSISTENT HTTP server (Cloud Run Service), distinct from the
+# scheduled Cloud Run Job used for full scans.
+#
+# It serves:
+#   - The web dashboard (GET routes)
+#   - The Pub/Sub webhook endpoint (POST /webhook/pubsub)
+#
+# Build: docker build -t gmailcleaner-web -f deploy/Dockerfile.web .
+# Run locally:
+#   docker run --rm -p 8080:8080 \
+#     -v $(pwd)/config:/app/config \
+#     -v $(pwd)/data:/app/data \
+#     -e DASHBOARD_SECRET=mysecret \
+#     gmailcleaner-web
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install deps first (layer cached unless requirements.txt changes).
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Application source.
+COPY auth/        auth/
+COPY gmail/       gmail/
+COPY engines/     engines/
+COPY pubsub/      pubsub/
+COPY store/       store/
+COPY output/      output/
+COPY web/         web/
+COPY ai/          ai/
+COPY config/settings.yaml config/settings.yaml
+COPY main.py      .
+
+# Runtime directories.
+RUN mkdir -p data output logs
+
+# Non-root user.
+RUN useradd --create-home --shell /bin/bash appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+# Expose port (Cloud Run injects PORT env var; default 8080).
+EXPOSE 8080
+
+# Gunicorn: production WSGI server.
+# --workers 2: 2 worker processes (Cloud Run min instance = 1 CPU).
+# --threads 4: 4 threads per worker for I/O-bound request handling.
+# --timeout 30: Cloud Run has a 60s request timeout; stay well under it.
+CMD exec gunicorn \
+    --bind "0.0.0.0:${PORT:-8080}" \
+    --workers 2 \
+    --threads 4 \
+    --timeout 30 \
+    --access-logfile - \
+    --error-logfile - \
+    "web.app:create_app()"

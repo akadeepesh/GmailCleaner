@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — GmailCleaner{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Dashboard</h2>
+    <p>Real-time inbox intelligence overview</p>
+</div>
+
+<!-- Stat cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-label">Needs Reply</div>
+        <div class="stat-value" style="color: var(--red);">{{ summary.triage_needs_reply }}</div>
+        <div class="stat-sub">in triage DB</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Pending Actions</div>
+        <div class="stat-value" style="color: var(--yellow);">{{ summary.pending_actions }}</div>
+        <div class="stat-sub">awaiting confirm</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Unsubscribed</div>
+        <div class="stat-value" style="color: var(--green);">{{ summary.unsubscribed }}</div>
+        <div class="stat-sub">of {{ summary.total_senders }} senders</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Needs Review</div>
+        <div class="stat-value" style="color: var(--purple);">{{ summary.triage_unclassified }}</div>
+        <div class="stat-sub">low confidence</div>
+    </div>
+</div>
+
+<!-- Watch status -->
+<div class="card">
+    <div class="card-title">Pub/Sub Watch Status</div>
+    {% if watch_reg %}
+    {% set expiry_ms = watch_reg.expiration_ms | int %}
+    <div class="flex flex-between">
+        <div>
+            <span class="badge badge-green">● Active</span>
+            <span class="muted" style="margin-left: 10px; font-size: 12px;">
+                Topic: <code>{{ watch_reg.topic_name }}</code>
+            </span>
+        </div>
+        <div class="flex gap-2">
+            <span class="muted" style="font-size: 12px;">
+                Registered {{ watch_reg.registered_at[:10] }}
+            </span>
+            <form method="POST" action="/api/watch/renew" style="display:inline;">
+                <button type="submit" class="btn btn-ghost" style="font-size: 12px; padding: 4px 10px;">
+                    ↻ Renew
+                </button>
+            </form>
+        </div>
+    </div>
+    <div class="mt-2" style="font-size: 12px; color: var(--muted);">
+        historyId: <code>{{ watch_reg.history_id }}</code>
+    </div>
+    {% else %}
+    <div class="alert alert-warn">
+        No active Gmail watch. Real-time processing is disabled.
+        Run <code>python main.py setup-watch</code> to activate Pub/Sub notifications.
+    </div>
+    {% endif %}
+</div>
+
+<!-- 7-day activity -->
+<div class="card">
+    <div class="card-title">7-Day Inbox Activity</div>
+    {% if stats %}
+    {% set max_new = stats | map(attribute='total_new') | max %}
+    {% for day in stats %}
+    {% set pct = ((day.total_new / max_new) * 100) | int if max_new > 0 else 0 %}
+    <div class="chart-bar-row">
+        <div class="chart-bar-label">{{ day.day[5:] }}</div>
+        <div class="chart-bar-track">
+            <div class="chart-bar-fill" style="width: {{ pct }}%; background: var(--accent);"></div>
+        </div>
+        <div class="chart-bar-val">{{ day.total_new }}</div>
+        {% if day.total_needs_reply %}
+        <span class="badge badge-red" style="font-size: 10px;">{{ day.total_needs_reply }} reply</span>
+        {% endif %}
+        {% if day.total_unsub %}
+        <span class="badge badge-muted" style="font-size: 10px;">{{ day.total_unsub }} unsub</span>
+        {% endif %}
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="muted" style="font-size: 13px;">
+        No activity data yet. Activity is recorded as Pub/Sub notifications arrive.
+    </p>
+    {% endif %}
+</div>
+
+<!-- Quick actions -->
+<div class="card">
+    <div class="card-title">Quick Actions</div>
+    <div class="flex gap-3">
+        <a href="/pending" class="btn btn-primary">⏳ Review Pending</a>
+        <a href="/stats" class="btn btn-ghost">📊 View Stats</a>
+        <a href="/history" class="btn btn-ghost">🕑 Run History</a>
+    </div>
+    {% if summary.last_run %}
+    <p class="muted mt-2" style="font-size: 12px;">Last run: {{ summary.last_run[:19] | replace('T', ' ') }} UTC</p>
+    {% endif %}
+</div>
+{% endblock %}
