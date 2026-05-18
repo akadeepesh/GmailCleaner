@@ -75,6 +75,32 @@ CREATE INDEX IF NOT EXISTS idx_action_log_run_id ON action_log(run_id);
 CREATE INDEX IF NOT EXISTS idx_action_log_status ON action_log(status);
 CREATE INDEX IF NOT EXISTS idx_senders_unsubscribed ON senders(unsubscribed_at);
 CREATE INDEX IF NOT EXISTS idx_triage_classified_at ON triage_results(classified_at);
+
+CREATE TABLE IF NOT EXISTS watch_registration (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
+    history_id      TEXT NOT NULL,
+    expiration_ms   TEXT NOT NULL,
+    topic_name      TEXT NOT NULL,
+    registered_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS inbox_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    recorded_at         TEXT NOT NULL,
+    new_count           INTEGER NOT NULL DEFAULT 0,
+    needs_reply_count   INTEGER NOT NULL DEFAULT 0,
+    promotions_count    INTEGER NOT NULL DEFAULT 0,
+    junk_count          INTEGER NOT NULL DEFAULT 0,
+    unsub_count         INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS kv_store (
+    key     TEXT PRIMARY KEY,
+    value   TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbox_events_recorded ON inbox_events(recorded_at);
 """
 
 
@@ -352,6 +378,135 @@ class Database:
                 (message_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    # ── Watch registration ────────────────────────────────────────────────────
+
+    def save_watch_registration(self, reg: "WatchRegistration") -> None:
+        """Upsert the singleton watch registration row."""
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO watch_registration (id, history_id, expiration_ms, topic_name, registered_at)
+                VALUES (1, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    history_id    = excluded.history_id,
+                    expiration_ms = excluded.expiration_ms,
+                    topic_name    = excluded.topic_name,
+                    registered_at = excluded.registered_at
+                """,
+                (reg.history_id, reg.expiration_ms, reg.topic_name, reg.registered_at),
+            )
+
+    def get_watch_registration(self) -> Optional[dict]:
+        """Return the current watch registration, or None if not registered."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM watch_registration WHERE id = 1").fetchone()
+        return dict(row) if row else None
+
+    def clear_watch_registration(self) -> None:
+        """Remove the watch registration (after stop_watch)."""
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM watch_registration WHERE id = 1")
+
+    # ── History ID (Pub/Sub baseline) ─────────────────────────────────────────
+
+    def save_history_id(self, history_id: str) -> None:
+        """Store the most recently processed Gmail historyId."""
+        now = _utcnow()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO kv_store (key, value, updated_at) VALUES ('last_history_id', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (history_id, now),
+            )
+
+    def get_last_history_id(self) -> Optional[str]:
+        """Return the last stored historyId, or None if never set."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM kv_store WHERE key = 'last_history_id'"
+            ).fetchone()
+        return row["value"] if row else None
+
+    # ── Inbox events (dashboard stats) ───────────────────────────────────────
+
+    def record_inbox_event(
+        self,
+        new_count: int,
+        needs_reply_count: int,
+        promotions_count: int,
+        junk_count: int,
+        unsub_count: int,
+    ) -> None:
+        """Record a snapshot of inbox activity from a webhook notification."""
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO inbox_events
+                    (recorded_at, new_count, needs_reply_count, promotions_count, junk_count, unsub_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (_utcnow(), new_count, needs_reply_count, promotions_count, junk_count, unsub_count),
+            )
+
+    def get_inbox_stats(self, days: int = 7) -> list[dict]:
+        """
+        Return daily inbox event aggregates for the last `days` days.
+        Used by the web dashboard to render activity charts.
+        """
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    date(recorded_at) AS day,
+                    SUM(new_count)           AS total_new,
+                    SUM(needs_reply_count)   AS total_needs_reply,
+                    SUM(promotions_count)    AS total_promotions,
+                    SUM(junk_count)          AS total_junk,
+                    SUM(unsub_count)         AS total_unsub
+                FROM inbox_events
+                WHERE recorded_at >= ?
+                GROUP BY date(recorded_at)
+                ORDER BY day ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_dashboard_summary(self) -> dict:
+        """
+        Return a flat summary dict for the dashboard header:
+        total senders seen, unsubscribed count, pending actions, last run.
+        """
+        with self._connect() as conn:
+            total_senders = conn.execute("SELECT COUNT(*) FROM senders").fetchone()[0]
+            unsubscribed = conn.execute(
+                "SELECT COUNT(*) FROM senders WHERE unsubscribed_at IS NOT NULL"
+            ).fetchone()[0]
+            pending_actions = conn.execute(
+                "SELECT COUNT(*) FROM action_log WHERE status = 'pending'"
+            ).fetchone()[0]
+            last_run = conn.execute(
+                "SELECT completed_at FROM runs WHERE completed_at IS NOT NULL ORDER BY completed_at DESC LIMIT 1"
+            ).fetchone()
+            triage_needs_reply = conn.execute(
+                "SELECT COUNT(*) FROM triage_results WHERE bucket = 'NEEDS_REPLY'"
+            ).fetchone()[0]
+            triage_unclassified = conn.execute(
+                "SELECT COUNT(*) FROM triage_results WHERE bucket = 'UNCLASSIFIED'"
+            ).fetchone()[0]
+        return {
+            "total_senders": total_senders,
+            "unsubscribed": unsubscribed,
+            "pending_actions": pending_actions,
+            "last_run": last_run[0] if last_run else None,
+            "triage_needs_reply": triage_needs_reply,
+            "triage_unclassified": triage_unclassified,
+        }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
