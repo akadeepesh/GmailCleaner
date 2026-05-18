@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Stats — GmailCleaner{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Stats</h2>
+    <p>Inbox activity, triage breakdown and sender analysis</p>
+</div>
+
+<!-- Triage bucket breakdown -->
+<div class="card">
+    <div class="card-title">Triage Bucket Breakdown (lifetime)</div>
+    {% set buckets = [
+    ('NEEDS_REPLY', 'Needs Reply', 'var(--red)'),
+    ('FYI', 'FYI', 'var(--accent)'),
+    ('PROMOTIONS', 'Promotions', 'var(--orange)'),
+    ('JUNK', 'Junk', 'var(--muted)'),
+    ('UNCLASSIFIED','Unclassified','var(--purple)'),
+    ] %}
+    {% set total = triage_counts.values() | sum %}
+    {% for key, label, color in buckets %}
+    {% set count = triage_counts.get(key, 0) %}
+    {% set pct = ((count / total) * 100) | round(1) if total > 0 else 0 %}
+    <div class="chart-bar-row">
+        <div class="chart-bar-label" style="color:{{ color }};">{{ label }}</div>
+        <div class="chart-bar-track">
+            <div class="chart-bar-fill" style="width:{{ pct }}%;background:{{ color }};"></div>
+        </div>
+        <div class="chart-bar-val">{{ count }}</div>
+        <span class="muted" style="font-size:11px;width:36px;">{{ pct }}%</span>
+    </div>
+    {% endfor %}
+    {% if total == 0 %}
+    <p class="muted" style="font-size:13px;">No triage data yet. Enable triage in settings.yaml and run a scan.</p>
+    {% endif %}
+</div>
+
+<!-- 14-day inbox volume -->
+<div class="card">
+    <div class="card-title">14-Day Inbox Volume</div>
+    {% if inbox_stats %}
+    {% set max_new = inbox_stats | map(attribute='total_new') | max %}
+    {% for day in inbox_stats %}
+    {% set pct = ((day.total_new / max_new) * 100) | int if max_new > 0 else 0 %}
+    <div class="chart-bar-row">
+        <div class="chart-bar-label">{{ day.day }}</div>
+        <div class="chart-bar-track">
+            <div class="chart-bar-fill" style="width:{{ pct }}%;background:var(--accent);"></div>
+        </div>
+        <div class="chart-bar-val">{{ day.total_new }}</div>
+        <div class="flex gap-2">
+            {% if day.total_needs_reply %}
+            <span class="badge badge-red" style="font-size:10px;">{{ day.total_needs_reply }} reply</span>
+            {% endif %}
+            {% if day.total_promotions %}
+            <span class="badge badge-muted" style="font-size:10px;">{{ day.total_promotions }} promo</span>
+            {% endif %}
+            {% if day.total_junk %}
+            <span class="badge badge-muted" style="font-size:10px;">{{ day.total_junk }} junk</span>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="muted" style="font-size:13px;">
+        No activity data yet. Data is recorded when Pub/Sub notifications are processed.
+    </p>
+    {% endif %}
+</div>
+
+<!-- Top senders -->
+<div class="card">
+    <div class="card-title">
+        Top Senders by Volume
+        <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px;">
+            ({{ sender_stats.total_unsubscribed }} unsubscribed lifetime)
+        </span>
+    </div>
+    {% if sender_stats.top_senders %}
+    {% set max_count = sender_stats.top_senders[0].email_count %}
+    {% for s in sender_stats.top_senders %}
+    {% set pct = ((s.email_count / max_count) * 100) | int %}
+    <div class="chart-bar-row">
+        <div class="chart-bar-label" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+            title="{{ s.domain }}">
+            {{ s.display_name or s.domain }}
+        </div>
+        <div class="chart-bar-track">
+            <div class="chart-bar-fill" style="width:{{ pct }}%;background:var(--accent-dim);"></div>
+        </div>
+        <div class="chart-bar-val">{{ s.email_count }}</div>
+        <span class="muted mono" style="font-size:10px;min-width:140px;">{{ s.domain }}</span>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="muted" style="font-size:13px;">No sender data yet.</p>
+    {% endif %}
+</div>
+
+{% endblock %}

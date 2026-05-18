@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}Pending Actions — GmailCleaner{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between">
+    <div>
+        <h2>Pending Actions</h2>
+        <p>Review and confirm what GmailCleaner should do</p>
+    </div>
+    <div class="flex gap-2">
+        <span class="muted" style="font-size: 12px;">
+            Run: <code>{{ report.run_id or '—' }}</code>
+        </span>
+    </div>
+</div>
+
+{% set unsub_items = report.unsubscribe | default([]) %}
+{% set delete_items = report.delete_groups | default([]) %}
+{% set needs_reply = report.triage.needs_reply | default([]) %}
+{% set unclassified = report.triage.unclassified | default([]) %}
+
+{% if not unsub_items and not delete_items and not needs_reply %}
+<div class="alert alert-ok">
+    ✓ No pending actions. Run <code>python main.py scan --no-dry-run</code> to generate a new report.
+</div>
+{% endif %}
+
+<!-- Unsubscribe candidates -->
+{% if unsub_items %}
+<div class="card">
+    <div class="flex-between mb" style="margin-bottom: 14px;">
+        <div class="card-title" style="margin-bottom:0;">
+            Unsubscribe Candidates
+            <span class="badge badge-blue" style="margin-left:8px;">{{ unsub_items | length }}</span>
+        </div>
+        <div class="flex gap-2">
+            <span class="muted" style="font-size:12px;">
+                {{ unsub_items | selectattr('confirmed') | list | length }} confirmed
+            </span>
+        </div>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Sender</th>
+                <th>Emails</th>
+                <th>Method</th>
+                <th>Last Subject</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in unsub_items %}
+            <tr id="unsub-{{ loop.index }}">
+                <td>
+                    <div style="font-weight:600;">{{ item.display_name | e }}</div>
+                    <div class="muted mono">{{ item.domain }}</div>
+                </td>
+                <td>{{ item.email_count }}</td>
+                <td>
+                    {% if 'One-click' in item.method %}
+                    <span class="badge badge-green">{{ item.method }}</span>
+                    {% elif item.method == 'HTTP' %}
+                    <span class="badge badge-blue">{{ item.method }}</span>
+                    {% else %}
+                    <span class="badge badge-yellow">{{ item.method }}</span>
+                    {% endif %}
+                </td>
+                <td class="muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                    {{ item.representative_subject | e }}
+                </td>
+                <td>
+                    {% if item.confirmed %}
+                    <span class="badge badge-green">✓ Confirmed</span>
+                    {% else %}
+                    <span class="badge badge-muted">Pending</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Delete groups -->
+{% if delete_items %}
+<div class="card">
+    <div class="flex-between" style="margin-bottom: 14px;">
+        <div class="card-title" style="margin-bottom:0;">
+            Bulk Cleanup Groups
+            <span class="badge badge-yellow" style="margin-left:8px;">{{ delete_items | length }}</span>
+        </div>
+        <div class="muted" style="font-size:12px;">
+            {{ delete_items | sum(attribute='email_count') | int }} emails total
+        </div>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Group</th>
+                <th>Emails</th>
+                <th>Oldest</th>
+                <th>Risk</th>
+                <th>Flags</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in delete_items %}
+            <tr>
+                <td>
+                    <div style="font-weight:600;">{{ item.label | e }}</div>
+                    <div class="muted" style="font-size:11px;">{{ item.group_type }} group</div>
+                </td>
+                <td>{{ item.email_count }}</td>
+                <td class="muted">{{ item.oldest_date }}</td>
+                <td>
+                    {% if item.score_label == 'high' %}
+                    <span class="badge badge-red">HIGH</span>
+                    {% elif item.score_label == 'medium' %}
+                    <span class="badge badge-yellow">MED</span>
+                    {% else %}
+                    <span class="badge badge-green">LOW</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if item.all_unread %}<span class="badge badge-muted">never opened</span>{% endif %}
+                    {% if item.has_unsubscribe %}<span class="badge badge-muted">promo</span>{% endif %}
+                </td>
+                <td>
+                    {% if item.confirmed %}
+                    <span class="badge badge-green">✓ Confirmed</span>
+                    {% else %}
+                    <span class="badge badge-muted">Pending</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Triage: Needs Reply -->
+{% if needs_reply %}
+<div class="card">
+    <div class="card-title">
+        ✉️ Needs Reply
+        <span class="badge badge-red" style="margin-left:8px;">{{ needs_reply | length }}</span>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Sender</th>
+                <th>Subject</th>
+                <th>Date</th>
+                <th>Confidence</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in needs_reply[:10] %}
+            <tr>
+                <td>
+                    <div style="font-weight:600;">{{ item.sender_name | e or item.sender_email | e }}</div>
+                    <div class="muted mono" style="font-size:11px;">{{ item.sender_email }}</div>
+                </td>
+                <td>
+                    {% if item.is_unread %}
+                    <span
+                        style="width:7px;height:7px;border-radius:50%;background:var(--red);display:inline-block;margin-right:5px;"></span>
+                    {% endif %}
+                    {{ item.subject | e }}
+                </td>
+                <td class="muted">{{ item.date }}</td>
+                <td>
+                    <span class="badge {% if item.confidence >= 0.85 %}badge-green{% else %}badge-yellow{% endif %}">
+                        {{ (item.confidence * 100) | int }}%
+                    </span>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if needs_reply | length > 10 %}
+            <tr>
+                <td colspan="4" class="muted" style="font-size:12px;">+ {{ needs_reply | length - 10 }} more…</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Triage: Unclassified -->
+{% if unclassified %}
+<div class="card">
+    <div class="card-title">
+        ❓ Needs Review (low confidence)
+        <span class="badge badge-purple" style="margin-left:8px;">{{ unclassified | length }}</span>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Sender</th>
+                <th>Subject</th>
+                <th>Confidence</th>
+                <th>Reason</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in unclassified[:10] %}
+            <tr>
+                <td class="mono" style="font-size:12px;">{{ item.sender_email }}</td>
+                <td>{{ item.subject | e }}</td>
+                <td><span class="badge badge-muted">{{ (item.confidence * 100) | int }}%</span></td>
+                <td class="muted" style="font-size:12px;">{{ item.reason | e | truncate(60) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Execute instructions -->
+{% if unsub_items or delete_items %}
+<div class="card">
+    <div class="card-title">Execute Confirmed Actions</div>
+    <div class="alert alert-info">
+        To execute: open <code>output/pending_actions.json</code>, set <code>"confirmed": true</code>
+        on items you approve, then run:
+    </div>
+    <pre
+        style="background:var(--surface2);padding:14px 16px;border-radius:8px;color:var(--green);font-size:13px;overflow-x:auto;border:1px solid var(--border);">python main.py execute --session output/pending_actions.json</pre>
+</div>
+{% endif %}
+
+{% endblock %}

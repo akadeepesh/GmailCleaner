@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}GmailCleaner{% endblock %}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3250;
+      --text: #e4e6f0;
+      --muted: #8891b0;
+      --accent: #5b7fff;
+      --accent-dim: #3a4fa6;
+      --red: #e05c5c;
+      --green: #4caf7d;
+      --yellow: #e0a84a;
+      --purple: #9b6dff;
+      --orange: #e07a3a;
+      --radius: 10px;
+      --sidebar-w: 220px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+    }
+
+    /* ── Sidebar ─────────────────────────────────────────── */
+    .sidebar {
+      width: var(--sidebar-w);
+      min-height: 100vh;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 24px 0;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+    }
+
+    .sidebar-logo {
+      padding: 0 20px 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+
+    .sidebar-logo h1 {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.3px;
+    }
+
+    .sidebar-logo span {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 20px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+    }
+
+    .nav-item:hover { color: var(--text); background: var(--surface2); }
+    .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: var(--surface2); }
+    .nav-icon { font-size: 15px; width: 18px; text-align: center; }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding: 16px 20px 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .sidebar-footer p { font-size: 11px; color: var(--muted); }
+
+    /* ── Main content ────────────────────────────────────── */
+    .main {
+      margin-left: var(--sidebar-w);
+      flex: 1;
+      padding: 32px;
+      min-height: 100vh;
+    }
+
+    .page-header {
+      margin-bottom: 28px;
+    }
+
+    .page-header h2 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .page-header p {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
+    /* ── Cards ───────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin-bottom: 14px;
+    }
+
+    /* ── Stat pills ──────────────────────────────────────── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+    }
+
+    .stat-card .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .stat-card .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      margin-top: 4px;
+      line-height: 1;
+    }
+
+    .stat-card .stat-sub {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    /* ── Tables ──────────────────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      font-size: 13px;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+
+    /* ── Badges ──────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-red    { background: rgba(224,92,92,.18);  color: var(--red);    }
+    .badge-green  { background: rgba(76,175,125,.18); color: var(--green);  }
+    .badge-yellow { background: rgba(224,168,74,.18); color: var(--yellow); }
+    .badge-purple { background: rgba(155,109,255,.18);color: var(--purple); }
+    .badge-blue   { background: rgba(91,127,255,.18); color: var(--accent); }
+    .badge-muted  { background: var(--surface2);      color: var(--muted);  }
+
+    /* ── Buttons ─────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s;
+      text-decoration: none;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: #4a6ef0; }
+    .btn-danger  { background: rgba(224,92,92,.15); color: var(--red); border: 1px solid rgba(224,92,92,.3); }
+    .btn-danger:hover { background: rgba(224,92,92,.25); }
+    .btn-ghost   { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+
+    /* ── Alerts ──────────────────────────────────────────── */
+    .alert {
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .alert-info   { background: rgba(91,127,255,.12); border: 1px solid rgba(91,127,255,.3); color: #a0b4ff; }
+    .alert-warn   { background: rgba(224,168,74,.12); border: 1px solid rgba(224,168,74,.3); color: var(--yellow); }
+    .alert-danger { background: rgba(224,92,92,.12);  border: 1px solid rgba(224,92,92,.3);  color: var(--red); }
+    .alert-ok     { background: rgba(76,175,125,.12); border: 1px solid rgba(76,175,125,.3); color: var(--green); }
+
+    /* ── Chart placeholder ───────────────────────────────── */
+    .chart-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    .chart-bar-label { width: 70px; color: var(--muted); text-align: right; flex-shrink: 0; }
+    .chart-bar-track { flex: 1; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
+    .chart-bar-fill  { height: 100%; border-radius: 4px; transition: width 0.4s; }
+    .chart-bar-val   { width: 40px; color: var(--muted); }
+
+    /* ── Misc ────────────────────────────────────────────── */
+    .muted { color: var(--muted); }
+    .mono  { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px; }
+    code   { background: var(--surface2); padding: 2px 6px; border-radius: 4px; font-size: 12px; font-family: monospace; }
+    .divider { height: 1px; background: var(--border); margin: 20px 0; }
+    .flex { display: flex; align-items: center; }
+    .flex-between { display: flex; align-items: center; justify-content: space-between; }
+    .gap-2 { gap: 8px; }
+    .gap-3 { gap: 12px; }
+    .mt-1  { margin-top: 4px; }
+    .mt-2  { margin-top: 8px; }
+    .mt-3  { margin-top: 16px; }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <h1>📬 GmailCleaner</h1>
+    <span>v0.4.0 · Phase 4</span>
+  </div>
+
+  <nav>
+    <a href="/" class="nav-item {% if active == 'dashboard' %}active{% endif %}">
+      <span class="nav-icon">🏠</span> Dashboard
+    </a>
+    <a href="/pending" class="nav-item {% if active == 'pending' %}active{% endif %}">
+      <span class="nav-icon">⏳</span> Pending Actions
+    </a>
+    <a href="/stats" class="nav-item {% if active == 'stats' %}active{% endif %}">
+      <span class="nav-icon">📊</span> Stats
+    </a>
+    <a href="/history" class="nav-item {% if active == 'history' %}active{% endif %}">
+      <span class="nav-icon">🕑</span> Run History
+    </a>
+  </nav>
+
+  <div class="sidebar-footer">
+    <p>{{ now }}</p>
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="main">
+  {% block content %}{% endblock %}
+</main>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>
