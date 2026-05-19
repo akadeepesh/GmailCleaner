@@ -508,13 +508,9 @@ def setup_watch(ctx: click.Context) -> None:
         reg = manager.register()
         console.print(
             Panel(
-                f"[bold green]✓ Gmail watch registered[/bold green]
-
-"
-                f"  Topic:      [cyan]{reg.topic_name}[/cyan]
-"
-                f"  historyId:  [dim]{reg.history_id}[/dim]
-"
+                f"[bold green]✓ Gmail watch registered[/bold green]"
+                f"  Topic:      [cyan]{reg.topic_name}[/cyan]"
+                f"  historyId:  [dim]{reg.history_id}[/dim]"
                 f"  Expires:    [dim]{reg.expiration_ms}[/dim]",
                 border_style="green",
                 padding=(1, 4),
@@ -522,8 +518,7 @@ def setup_watch(ctx: click.Context) -> None:
         )
         # Store baseline historyId so the first webhook call has a starting point.
         db.save_history_id(reg.history_id)
-        console.print("  [dim]Baseline historyId saved to DB.[/dim]
-")
+        console.print("  [dim]Baseline historyId saved to DB.[/dim]")
     except RuntimeError as exc:
         console.print(f"[red]✗ {exc}[/red]")
         sys.exit(1)

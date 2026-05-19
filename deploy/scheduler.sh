@@ -16,7 +16,7 @@
 set -euo pipefail
 
 # ── Configuration — edit these ─────────────────────────────────────────────
-GCP_PROJECT="${GCP_PROJECT_ID:-your-gcp-project-id}"
+GCP_PROJECT="${GCP_PROJECT_ID:-gmailcleaner-496510}"
 REGION="${GCP_REGION:-us-central1}"
 JOB_NAME="gmail-cleaner"
 SCHEDULER_JOB_NAME="gmail-cleaner-daily"
