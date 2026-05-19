@@ -40,7 +40,7 @@ digest:
   # Whether to send a daily digest email (Phase 3).
   enabled: false
   send_time: "07:00"
-  recipient: ""
+  recipient: "akadeepesh1710@gmail.com"
 
 # MASTER SAFETY SWITCH.
 # When true: GmailCleaner only produces reports and pending_actions.json.
