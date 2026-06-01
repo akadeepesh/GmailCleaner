@@ -30,15 +30,15 @@ bulk_cleanup:
 
 triage:
   # Whether to run AI-powered triage (Phase 3 — requires Gemini API key).
-  enabled: false
-  model: gemini-1.5-flash
+  enabled: true
+  model: gemini-3.5-flash
 
   # Confidence threshold below which a classification is flagged for manual review.
   confidence_threshold: 0.75
 
 digest:
   # Whether to send a daily digest email (Phase 3).
-  enabled: false
+  enabled: true
   send_time: "07:00"
   recipient: "akadeepesh1710@gmail.com"
 
@@ -65,5 +65,5 @@ logging:
   level: "INFO"
 
   # Whether to write logs to a file in addition to stdout.
-  file_enabled: false
+  file_enabled: true
   file_path: "logs/gmailcleaner.log"
