@@ -40,7 +40,7 @@ In future releases, users will be able to configure trusted rules (e.g. "always 
 
 | Layer | Technology |
 |---|---|
-| Language | Python 3.11+ or Node.js 20+ (your choice at setup) |
+| Language | Python 3.11+ |
 | Gmail Access | Gmail API via Google OAuth 2.0 |
 | AI Classification | Gemini 1.5 Flash (free tier) via Google AI Studio |
 | Scheduling | Google Cloud Scheduler (triggers Cloud Run jobs) |
@@ -115,29 +115,30 @@ gcloud services enable cloudscheduler.googleapis.com
 ### 4. Install dependencies
 
 ```bash
-# Python
 pip install -r requirements.txt
-
-# Or Node.js
-npm install
 ```
 
 ### 5. Run locally in dry-run mode
 
 ```bash
-python main.py --dry-run
-# or
-node main.js --dry-run
+python main.py scan
 ```
 
-This authenticates, scans your inbox, and prints a report of what GmailCleaner would do — without touching anything.
+This authenticates, scans your inbox, and writes `output/pending_actions.json` — a report of what GmailCleaner would do — without touching anything. `confirm_first: true` in `config/settings.yaml` is the master safety switch and is on by default.
+
+Other useful commands:
+
+```bash
+python main.py info            # show authenticated account + config summary
+python main.py setup-watch     # register Gmail Pub/Sub push notifications (Phase 4)
+```
 
 ### 6. Review and confirm
 
-Open the generated `pending_actions.json` and approve actions:
+Open `output/pending_actions.json`, set `"confirmed": true` on the unsubscribe/delete items you approve, then run:
 
 ```bash
-python main.py --execute --session pending_actions.json
+python main.py execute --session output/pending_actions.json
 ```
 
 ---
@@ -177,15 +178,23 @@ blocked_senders: []         # Senders to always skip / never touch
 
 ---
 
-## Roadmap
+## Project Status
+
+**All four phases are implemented and passing tests (254/254).** This is further along than the checklist below used to suggest — code for OAuth, unsubscribe detection, bulk cleanup, GCP deployment, Gemini-based triage, the daily digest, Pub/Sub real-time watching, and the Flask web dashboard all exist and run.
 
 - [x] Phase 1: OAuth + Unsubscribe detection (dry-run)
-- [ ] Phase 2: Bulk cleanup + Cloud Run deployment
-- [ ] Phase 3: AI triage + daily digest
-- [ ] Phase 4: Pub/Sub real-time + web dashboard
-- [ ] Trusted rules engine (auto-confirm for specific conditions)
+- [x] Phase 2: Bulk cleanup + Cloud Run deployment
+- [x] Phase 3: AI triage (Gemini) + daily digest
+- [x] Phase 4: Pub/Sub real-time + web dashboard
+- [ ] Trusted rules engine (config field `trusted_rules` and `confirm_first` exist and are read by the executor, but no code path yet acts on `trusted_rules` to bypass confirmation automatically — currently every action still requires manual confirmation)
 - [ ] Multi-account support
 - [ ] Inbox health export (PDF / CSV)
+
+### Known gaps / before you deploy this publicly
+
+- `gmail/executor.py` — the module that performs **permanent, un-trashed deletion** via `batchDelete` and sends unsubscribe requests — has an empty test file (`tests/test_executer.py`). Everything else has real test coverage; this doesn't yet.
+- `config/settings.yaml` ships with a real personal email hardcoded as the digest `recipient`. Replace it with your own address (or a placeholder) before committing/sharing this repo.
+- Two bugs were found and fixed during review: the Flask app's `template_folder` pointed at a nonexistent `templates/` subfolder (the entire web dashboard 404'd), and the subject-clustering regex in the bulk cleanup engine didn't correctly strip `#123`-style issue numbers, so numbered newsletter series (e.g. "Weekly Digest #1", "#2", "#3") failed to group. Both are fixed as of this commit.
 
 ---
 

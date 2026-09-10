@@ -246,7 +246,7 @@ def _score_group(group: CleanupGroup) -> float:
 # Prefixes to strip before extracting the subject root.
 _RE_REPLY_FWD = re.compile(r"^(re|fwd?)\s*:\s*", re.IGNORECASE)
 # Issue / edition numbers: "#42", "No. 7", "Issue 3", "Vol. 2"
-_RE_ISSUE_NUM = re.compile(r"\b(#\d+|no\.?\s*\d+|issue\s*\d+|vol\.?\s*\d+|edition\s*\d+)\b", re.IGNORECASE)
+_RE_ISSUE_NUM = re.compile(r"#\d+\b|\b(?:no\.?\s*\d+|issue\s*\d+|vol\.?\s*\d+|edition\s*\d+)\b", re.IGNORECASE)
 # Embedded dates: "May 2025", "2025-05-16", "05/16/25"
 _RE_DATE = re.compile(
     r"\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|"

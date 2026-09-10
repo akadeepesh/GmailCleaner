@@ -67,7 +67,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
     """
     app = Flask(
         __name__,
-        template_folder="templates",
+        template_folder=str(Path(__file__).parent),
         static_folder="static",
     )
 

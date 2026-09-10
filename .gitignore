@@ -41,5 +41,3 @@ htmlcov/
 # Docker
 *.dockerignore
 
-# contextzip workspace
-.contextzip/
