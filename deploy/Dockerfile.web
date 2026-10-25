@@ -1,21 +1,26 @@
-# GmailCleaner — Web Dashboard Cloud Run Service
+# GmailCleaner — Web dashboard & Pub/Sub webhook (Cloud Run Service)
 #
-# This is a PERSISTENT HTTP server (Cloud Run Service), distinct from the
-# scheduled Cloud Run Job used for full scans.
-#
+# This is a persistent HTTP server, distinct from the scheduled Cloud Run Job.
 # It serves:
-#   - The web dashboard (GET routes)
+#   - The web dashboard (GET routes, /api/*)
 #   - The Pub/Sub webhook endpoint (POST /webhook/pubsub)
 #
-# Build: docker build -t gmailcleaner-web -f deploy/Dockerfile.web .
-# Run locally:
-#   docker run --rm -p 8080:8080 \
-#     -v $(pwd)/config:/app/config \
-#     -v $(pwd)/data:/app/data \
-#     -e DASHBOARD_SECRET=mysecret \
-#     gmailcleaner-web
+# Build:        docker build -t gmailcleaner-web -f deploy/Dockerfile.web .
+# Run locally:  docker run --rm -p 8080:8080 \
+#                 -e GOOGLE_TOKEN_JSON="$(cat config/token.json)" \
+#                 -e DASHBOARD_SECRET=change-me \
+#                 -v "$(pwd)/data:/app/data" \
+#                 -e DATABASE_PATH=/app/data/gmailcleaner.db \
+#                 -e PENDING_ACTIONS_PATH=/app/data/pending_actions.json \
+#                 gmailcleaner-web
+#               then open http://localhost:8080/?token=change-me
 
-FROM python:3.11-slim
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    GMAILCLEANER_HEADLESS=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -23,42 +28,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install deps first (layer cached unless requirements.txt changes).
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
-# Application source.
+COPY version.py main.py ./
+COPY core/        core/
 COPY auth/        auth/
+COPY ai/          ai/
 COPY gmail/       gmail/
 COPY engines/     engines/
-COPY pubsub/      pubsub/
 COPY store/       store/
 COPY output/      output/
+COPY pubsub/      pubsub/
 COPY web/         web/
-COPY ai/          ai/
 COPY config/settings.yaml config/settings.yaml
-COPY main.py      .
 
-# Runtime directories.
-RUN mkdir -p data output logs
-
-# Non-root user.
-RUN useradd --create-home --shell /bin/bash appuser \
+RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin appuser \
+    && mkdir -p data output logs \
     && chown -R appuser:appuser /app
 USER appuser
 
-# Expose port (Cloud Run injects PORT env var; default 8080).
 EXPOSE 8080
 
-# Gunicorn: production WSGI server.
-# --workers 2: 2 worker processes (Cloud Run min instance = 1 CPU).
-# --threads 4: 4 threads per worker for I/O-bound request handling.
-# --timeout 30: Cloud Run has a 60s request timeout; stay well under it.
+# One worker process: the SQLite DB lives on a shared volume, so a single
+# writer process is the safe choice. Threads handle concurrent requests.
+# A long timeout lets /api/execute finish large unsubscribe batches.
 CMD exec gunicorn \
     --bind "0.0.0.0:${PORT:-8080}" \
-    --workers 2 \
-    --threads 4 \
-    --timeout 30 \
+    --workers 1 \
+    --threads 8 \
+    --timeout 300 \
     --access-logfile - \
     --error-logfile - \
     "web.app:create_app()"

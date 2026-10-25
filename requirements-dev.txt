@@ -1,0 +1,8 @@
+# Development and test dependencies.
+-r requirements.txt
+coverage==7.14.0
+iniconfig==2.3.0
+pluggy==1.6.0
+pytest==9.0.3
+pytest-cov==7.1.0
+pytest-mock==3.15.1
