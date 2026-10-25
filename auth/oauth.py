@@ -2,14 +2,15 @@
 GmailCleaner — Google OAuth 2.0
 Handles the full authorization lifecycle:
   - First-run browser-based consent flow
-  - Token persistence to disk (local dev) or Secret Manager (production)
+  - Token persistence to disk (local dev) or the GOOGLE_TOKEN_JSON env var
+    injected from Secret Manager (production)
   - Silent refresh on subsequent runs
   - Scope validation
 
 Gmail API scopes requested:
-  - gmail.readonly  : fetch and read emails (scan phase)
-  - gmail.modify    : delete, label, send (execute phase)
-  - gmail.send      : send the daily digest
+  - gmail.readonly  : fetch and read emails (scan)
+  - gmail.modify    : move to Trash, label (execute)
+  - gmail.send      : send the daily digest and mailto unsubscribes
 """
 
 import json
@@ -30,9 +31,9 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCOPES = [
-    # Read-only access to mailbox — used during scan phase.
+    # Read-only access to mailbox — used during scans.
     "https://www.googleapis.com/auth/gmail.readonly",
-    # Modify labels, move to trash, batch delete — used during execute phase.
+    # Modify labels and move to Trash — used when executing confirmed actions.
     "https://www.googleapis.com/auth/gmail.modify",
     # Send the daily digest email back to the user's own inbox.
     "https://www.googleapis.com/auth/gmail.send",
@@ -43,6 +44,20 @@ SCOPES = [
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
 
+def load_credentials(cfg: dict) -> Credentials:
+    """
+    Return valid credentials using the paths resolved in the runtime config.
+
+    On Cloud Run the token is injected from Secret Manager as the
+    GOOGLE_TOKEN_JSON environment variable; locally it is read from disk.
+    """
+    auth_cfg = cfg.get("auth", {})
+    return get_credentials(
+        auth_cfg.get("credentials_path", "config/credentials.json"),
+        auth_cfg.get("token_path", "config/token.json"),
+    )
+
+
 def get_credentials(
     credentials_path: str,
     token_path: str,
@@ -50,9 +65,11 @@ def get_credentials(
     """
     Return valid Google OAuth credentials, handling the full lifecycle:
 
+    0. If GOOGLE_TOKEN_JSON is set (production) → load it, refresh in memory.
     1. If a saved token exists and is valid → return it immediately.
     2. If the saved token is expired but has a refresh token → refresh silently.
-    3. If no token exists or refresh fails → launch browser consent flow.
+    3. If no token exists or refresh fails → launch browser consent flow
+       (never in headless mode — see GMAILCLEANER_HEADLESS).
     4. Persist the resulting token for future runs.
 
     Args:
@@ -64,16 +81,12 @@ def get_credentials(
         A valid, unexpired google.oauth2.credentials.Credentials object.
 
     Raises:
-        FileNotFoundError: If credentials_path does not exist.
-        RuntimeError:      If the OAuth flow fails or scopes are insufficient.
+        FileNotFoundError: If credentials_path does not exist and a consent flow is needed.
+        RuntimeError:      If the OAuth flow fails, or a headless run has no usable token.
     """
-    creds_file = Path(credentials_path)
-    if not creds_file.exists():
-        raise FileNotFoundError(
-            f"OAuth credentials not found at: {credentials_path}\n"
-            "Download your credentials from Google Cloud Console → APIs & Services → Credentials\n"
-            "and save them to config/credentials.json (or update GOOGLE_CREDENTIALS_PATH in .env)."
-        )
+    token_json = os.getenv("GOOGLE_TOKEN_JSON", "").strip()
+    if token_json:
+        return _credentials_from_env(token_json)
 
     creds = _load_token(token_path)
 
@@ -87,66 +100,72 @@ def get_credentials(
         if creds:
             return creds
 
+    if _is_headless():
+        raise RuntimeError(
+            f"No valid OAuth token at {token_path} and running headless. "
+            "Generate a token locally with `python main.py info`, then provide it "
+            "via GOOGLE_TOKEN_JSON or GOOGLE_TOKEN_PATH."
+        )
+
+    creds_file = Path(credentials_path)
+    if not creds_file.exists():
+        raise FileNotFoundError(
+            f"OAuth credentials not found at: {credentials_path}\n"
+            "Download your credentials from Google Cloud Console → APIs & Services → Credentials\n"
+            "and save them to config/credentials.json (or update GOOGLE_CREDENTIALS_PATH in .env)."
+        )
+
     # No valid token — run the browser consent flow.
     logger.info("No valid token found. Launching OAuth consent flow in browser...")
     creds = _run_consent_flow(credentials_path, token_path)
     return creds
 
 
-def get_credentials_from_secret_manager(
-    project_id: str,
-    credentials_secret: str = "gmail-cleaner-credentials",
-    token_secret: str = "gmail-cleaner-token",
-) -> Credentials:
-    """
-    Production path: load credentials and token from Google Secret Manager.
-
-    This function is used when deployed to Cloud Run, where no local
-    filesystem is available for credential storage.
-
-    Args:
-        project_id:          GCP project ID.
-        credentials_secret:  Secret Manager secret name for the OAuth credentials JSON.
-        token_secret:        Secret Manager secret name for the saved token JSON.
-
-    Returns:
-        Valid Google OAuth credentials.
-    """
-    try:
-        from google.cloud import secretmanager  # type: ignore
-    except ImportError as exc:
-        raise ImportError(
-            "google-cloud-secret-manager is required for production credential loading. "
-            "Install it with: pip install google-cloud-secret-manager"
-        ) from exc
-
-    client = secretmanager.SecretManagerServiceClient()
-
-    def _access(secret_name: str) -> dict:
-        name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
-        response = client.access_secret_version(request={"name": name})
-        return json.loads(response.payload.data.decode("utf-8"))
-
-    credentials_data = _access(credentials_secret)
-    token_data = _access(token_secret)
-
-    creds = Credentials.from_authorized_user_info(token_data, SCOPES)
-
-    if creds.expired and creds.refresh_token:
-        creds = _refresh_token(creds, token_path=None)
-
-    if not creds or not creds.valid:
-        raise RuntimeError(
-            "Credentials loaded from Secret Manager are invalid or expired. "
-            "Re-run the OAuth consent flow locally and update the token secret."
-        )
-
-    return creds
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _credentials_from_env(token_json: str) -> Credentials:
+    """
+    Production path: build credentials from the GOOGLE_TOKEN_JSON env var.
+
+    The token JSON written by the local consent flow already contains the
+    client_id, client_secret and refresh_token, so no credentials file is
+    needed. Refreshed access tokens are kept in memory only.
+    """
+    try:
+        info = json.loads(token_json)
+        creds = Credentials.from_authorized_user_info(info, SCOPES)
+    except (ValueError, KeyError) as exc:
+        raise RuntimeError(f"GOOGLE_TOKEN_JSON is not a valid authorized-user token: {exc}") from exc
+
+    if not creds.valid:
+        if not creds.refresh_token:
+            raise RuntimeError("GOOGLE_TOKEN_JSON has no refresh_token; re-run the consent flow locally.")
+        refreshed = _refresh_token(creds, token_path=None)
+        if not refreshed:
+            raise RuntimeError(
+                "Token from GOOGLE_TOKEN_JSON could not be refreshed. It may have been revoked, "
+                "or the OAuth consent screen is still in 'Testing' mode (tokens expire after 7 days). "
+                "Re-run `python main.py info` locally and update the token secret."
+            )
+        creds = refreshed
+
+    _assert_scopes(creds)
+    logger.debug("Loaded credentials from GOOGLE_TOKEN_JSON")
+    return creds
+
+
+def _is_headless() -> bool:
+    """True when running in a container / CI where a browser flow is impossible."""
+    flag = os.getenv("GMAILCLEANER_HEADLESS", "").lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    if flag in ("0", "false", "no"):
+        return False
+    # Cloud Run sets K_SERVICE (services) or CLOUD_RUN_JOB (jobs).
+    return bool(os.getenv("K_SERVICE") or os.getenv("CLOUD_RUN_JOB"))
+
 
 def _load_token(token_path: str) -> Optional[Credentials]:
     """Load a previously saved token. Returns None if the file does not exist."""
@@ -195,8 +214,8 @@ def _run_consent_flow(credentials_path: str, token_path: str) -> Credentials:
     except Exception as exc:
         raise RuntimeError(
             f"OAuth consent flow failed: {exc}\n"
-            "If running headlessly, ensure a browser is available or use the "
-            "Secret Manager path for production deployments."
+            "If running headlessly, generate the token on a machine with a browser "
+            "and supply it via GOOGLE_TOKEN_JSON."
         ) from exc
 
     _save_token(creds, token_path)
