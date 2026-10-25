@@ -21,7 +21,7 @@
 
 {% if not unsub_items and not delete_items and not needs_reply %}
 <div class="alert alert-ok">
-    ✓ No pending actions. Run <code>python main.py scan --no-dry-run</code> to generate a new report.
+    ✓ No pending actions. Run <code>python main.py scan</code> to generate a new report.
 </div>
 {% endif %}
 
@@ -46,7 +46,7 @@
                 <th>Emails</th>
                 <th>Method</th>
                 <th>Last Subject</th>
-                <th>Status</th>
+                <th>Action</th>
             </tr>
         </thead>
         <tbody>
@@ -70,10 +70,18 @@
                     {{ item.representative_subject | e }}
                 </td>
                 <td>
-                    {% if item.confirmed %}
-                    <span class="badge badge-green">✓ Confirmed</span>
+                    {% if item.executed_at %}
+                    <span class="badge badge-green">✓ Done</span>
                     {% else %}
-                    <span class="badge badge-muted">Pending</span>
+                    <button type="button"
+                        class="btn {% if item.confirmed %}btn-primary{% else %}btn-ghost{% endif %}"
+                        style="font-size:12px;padding:4px 10px;"
+                        data-type="unsubscribe" data-target="{{ item.domain }}"
+                        data-confirmed="{{ 'true' if item.confirmed else 'false' }}"
+                        onclick="toggleConfirm(this)">
+                        {% if item.confirmed %}✓ Confirmed{% else %}Confirm{% endif %}
+                    </button>
+                    {% if item.auto_confirmed %}<div class="muted" style="font-size:11px;margin-top:3px;">by trusted rule</div>{% endif %}
                     {% endif %}
                 </td>
             </tr>
@@ -92,7 +100,7 @@
             <span class="badge badge-yellow" style="margin-left:8px;">{{ delete_items | length }}</span>
         </div>
         <div class="muted" style="font-size:12px;">
-            {{ delete_items | sum(attribute='email_count') | int }} emails total
+            {{ delete_items | sum(attribute='email_count') | int }} emails total · confirmed groups are moved to Trash
         </div>
     </div>
     <table>
@@ -103,7 +111,7 @@
                 <th>Oldest</th>
                 <th>Risk</th>
                 <th>Flags</th>
-                <th>Status</th>
+                <th>Action</th>
             </tr>
         </thead>
         <tbody>
@@ -129,10 +137,18 @@
                     {% if item.has_unsubscribe %}<span class="badge badge-muted">promo</span>{% endif %}
                 </td>
                 <td>
-                    {% if item.confirmed %}
-                    <span class="badge badge-green">✓ Confirmed</span>
+                    {% if item.executed_at %}
+                    <span class="badge badge-green">✓ Done</span>
                     {% else %}
-                    <span class="badge badge-muted">Pending</span>
+                    <button type="button"
+                        class="btn {% if item.confirmed %}btn-primary{% else %}btn-ghost{% endif %}"
+                        style="font-size:12px;padding:4px 10px;"
+                        data-type="delete" data-target="{{ item.group_id }}"
+                        data-confirmed="{{ 'true' if item.confirmed else 'false' }}"
+                        onclick="toggleConfirm(this)">
+                        {% if item.confirmed %}✓ Confirmed{% else %}Confirm{% endif %}
+                    </button>
+                    {% if item.auto_confirmed %}<div class="muted" style="font-size:11px;margin-top:3px;">by trusted rule</div>{% endif %}
                     {% endif %}
                 </td>
             </tr>
@@ -220,17 +236,56 @@
 </div>
 {% endif %}
 
-<!-- Execute instructions -->
+<!-- Execute -->
 {% if unsub_items or delete_items %}
 <div class="card">
-    <div class="card-title">Execute Confirmed Actions</div>
+    <div class="flex-between" style="margin-bottom: 12px;">
+        <div class="card-title" style="margin-bottom:0;">Execute Confirmed Actions</div>
+        <button type="button" id="execute-btn" class="btn btn-danger"
+            data-ready="{{ ready_count }}" onclick="executeConfirmed(this)"
+            {% if not ready_count %}disabled{% endif %}>
+            ▶ Execute {{ ready_count }} confirmed action{{ '' if ready_count == 1 else 's' }}
+        </button>
+    </div>
     <div class="alert alert-info">
-        To execute: open <code>output/pending_actions.json</code>, set <code>"confirmed": true</code>
-        on items you approve, then run:
+        Confirmed unsubscribes are sent and confirmed cleanup groups are moved to Gmail's Trash
+        (recoverable for 30 days). You can also execute from the command line:
     </div>
     <pre
-        style="background:var(--surface2);padding:14px 16px;border-radius:8px;color:var(--green);font-size:13px;overflow-x:auto;border:1px solid var(--border);">python main.py execute --session output/pending_actions.json</pre>
+        style="background:var(--surface2);padding:14px 16px;border-radius:8px;color:var(--green);font-size:13px;overflow-x:auto;border:1px solid var(--border);">python main.py execute --session {{ session_path }}</pre>
 </div>
 {% endif %}
+{% endblock %}
 
+{% block scripts %}
+<script>
+  async function toggleConfirm(btn) {
+    btn.disabled = true;
+    try {
+      await gcPost("/api/confirm", {
+        action_type: btn.dataset.type,
+        target: btn.dataset.target,
+        confirmed: btn.dataset.confirmed !== "true",
+      });
+      location.reload();
+    } catch (err) {
+      alert("Could not update: " + err.message);
+      btn.disabled = false;
+    }
+  }
+
+  async function executeConfirmed(btn) {
+    const n = btn.dataset.ready;
+    if (!confirm("Execute " + n + " confirmed action(s)? Unsubscribes cannot be undone.")) return;
+    btn.disabled = true;
+    btn.textContent = "Executing…";
+    try {
+      const r = await gcPost("/api/execute");
+      alert("Done — unsubscribed: " + r.unsubscribed + ", moved to Trash: " + r.trashed + ", failed: " + r.failed);
+    } catch (err) {
+      alert("Execution failed: " + err.message);
+    }
+    location.reload();
+  }
+</script>
 {% endblock %}

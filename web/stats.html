@@ -79,7 +79,7 @@
     {% if sender_stats.top_senders %}
     {% set max_count = sender_stats.top_senders[0].email_count %}
     {% for s in sender_stats.top_senders %}
-    {% set pct = ((s.email_count / max_count) * 100) | int %}
+    {% set pct = ((s.email_count / max_count) * 100) | int if max_count > 0 else 0 %}
     <div class="chart-bar-row">
         <div class="chart-bar-label" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
             title="{{ s.domain }}">
@@ -97,4 +97,17 @@
     {% endif %}
 </div>
 
+
+<!-- Export -->
+<div class="card">
+    <div class="card-title">Inbox Health Export</div>
+    <p class="muted" style="font-size:13px;margin-bottom:12px;">
+        Download what GmailCleaner has recorded as CSV (metadata only — never email bodies).
+    </p>
+    <div class="flex gap-2">
+        {% for dataset in datasets %}
+        <a href="/export/{{ dataset }}.csv" class="btn btn-ghost">⬇ {{ dataset | capitalize }}</a>
+        {% endfor %}
+    </div>
+</div>
 {% endblock %}
