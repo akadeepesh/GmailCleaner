@@ -4,427 +4,230 @@ This document describes the internal design of GmailCleaner: how data flows, how
 
 ---
 
-## High-Level System Diagram
+## System overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Google Cloud (your project)                  │
-│                                                                     │
-│  ┌──────────────────┐     triggers     ┌──────────────────────────┐ │
-│  │  Cloud Scheduler │ ──────────────►  │      Cloud Run Job       │ │
-│  │  (cron: daily)   │                  │   (GmailCleaner engine)  │ │
-│  └──────────────────┘                  └──────────┬───────────────┘ │
-│                                                   │                 │
-│                    ┌──────────────────────────────┼──────────────┐  │
-│                    │                              │              │  │
-│                    ▼                              ▼              ▼  │
-│           ┌──────────────┐              ┌──────────────┐  ┌──────┐  │
-│           │  Gmail API   │              │  Gemini API  │  │  DB  │  │
-│           │  (read/write)│              │ (classify)   │  │(SQLite│  │
-│           └──────────────┘              └──────────────┘  └──────┘  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-
-Phase 4 addition:
-┌──────────────────┐    push notification    ┌──────────────────────┐
-│  Gmail Pub/Sub   │ ──────────────────────► │  Cloud Run Service   │
-│  (inbox events)  │                         │  (webhook handler)   │
-└──────────────────┘                         └──────────────────────┘
+┌──────────────────────────────── Google Cloud (your project) ────────────────────────────────┐
+│                                                                                             │
+│  Cloud Scheduler ──(daily)──► Cloud Run Job ─────────┐                                      │
+│                                (scan · digest ·      │                                      │
+│                                 trusted rules)       │                                      │
+│                                                      ▼                                      │
+│                                          Cloud Storage volume  ◄── SQLite DB +              │
+│                                                      ▲             pending_actions.json     │
+│  Gmail ──push──► Pub/Sub ──OIDC push──► Cloud Run Service                                   │
+│                                          (dashboard · webhook ·                             │
+│  Cloud Scheduler ──(daily)──────────────► /api/watch/renew)                                 │
+│                                                                                             │
+│  Secret Manager: OAuth token · Gemini API key · dashboard secret                            │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+        │                                   │
+        ▼                                   ▼
+   Gmail API (read / modify / send)    Gemini API (metadata-only classification)
 ```
+
+The same code runs locally: the CLI and `python -m web.app` read files under `config/`, `data/` and `output/` instead of the mounted volume and Secret Manager.
 
 ---
 
-## Execution Model
+## Execution model
 
-GmailCleaner runs as a **Cloud Run Job** — not a persistent server. It wakes up on a schedule, does its work, writes its output, and shuts down. This keeps it within GCP's free tier.
-
-The two-phase execution model:
+GmailCleaner separates **deciding** from **acting**:
 
 ```
-Phase A: SCAN (read-only)
-  └── Fetch emails → Analyze → Produce pending_actions output → Send digest
+SCAN (read-only)
+  └── fetch metadata → engines → digest → pending actions report (+ action_log rows)
 
-Phase B: EXECUTE (write)
-  └── User confirms → Apply approved actions via Gmail API → Log results
+CONFIRM
+  └── user sets "confirmed": true (dashboard / JSON) — or trusted rules auto-confirm
+
+EXECUTE (write)
+  └── executor runs confirmed, not-yet-executed items → stamps executed_at → action_log
 ```
 
-In the first release, Phase B is triggered manually by the user. In a future release, a trusted-rules engine will allow Phase B to run automatically for pre-approved action types.
+- The **scheduled job** runs `scan --no-dry-run`. With the default `confirm_first: true`, this only reports. With `confirm_first: false` and `trusted_rules`, it also executes the matching actions.
+- The **dashboard** and `main.py execute` both call the same `execute_report()` function, so the CLI and web paths behave identically.
+- Each scan replaces the report. Pending `action_log` rows from older runs are marked `superseded`.
 
 ---
 
-## Repository Structure
+## Repository structure
 
 ```
 GmailCleaner/
-│
-├── main.py                   # Entrypoint — orchestrates the pipeline
-│
+├── main.py                 # CLI: info · scan · execute · export · setup-watch
+├── version.py              # single version string
+├── core/
+│   └── settings.py         # settings.yaml loading, env overrides, multi-account paths
 ├── config/
-│   ├── settings.yaml         # User configuration (see README)
-│   └── credentials.json      # Google OAuth credentials (gitignored)
-│
+│   └── settings.yaml       # user configuration (documented inline)
 ├── auth/
-│   └── oauth.py              # OAuth 2.0 flow, token storage, refresh logic
-│
+│   └── oauth.py            # OAuth lifecycle; GOOGLE_TOKEN_JSON for headless/Cloud Run
 ├── gmail/
-│   ├── client.py             # Gmail API wrapper (authenticated session)
-│   ├── fetcher.py            # Fetches emails with filters and pagination
-│   ├── parser.py             # Parses raw messages: headers, body, metadata
-│   └── executor.py           # Applies approved actions (delete, label, send)
-│
+│   ├── client.py           # typed Gmail API wrapper (batch get, batch trash, watch, history)
+│   ├── fetcher.py          # paginated metadata fetch
+│   ├── parser.py           # raw API dicts → GmailMessage dataclasses
+│   └── executor.py         # unsubscribe / trash execution + execute_report()
 ├── engines/
-│   ├── unsubscribe.py        # Detects List-Unsubscribe headers, extracts targets
-│   ├── bulk_cleanup.py       # Groups emails by sender/subject pattern
-│   ├── triage.py             # AI-powered inbox classification
-│   └── digest.py             # Builds and sends the daily digest email
-│
+│   ├── unsubscribe.py      # RFC 2369 / 8058 candidate detection
+│   ├── bulk_cleanup.py     # domain + subject-pattern grouping and scoring
+│   ├── triage.py           # Gemini classification into buckets
+│   ├── digest.py           # HTML digest email
+│   └── rules.py            # trusted rules engine
 ├── ai/
-│   └── gemini.py             # Gemini API client, prompt templates, response parsing
-│
+│   └── gemini.py           # Gemini REST client, prompt, defensive parsing, backoff
 ├── store/
-│   └── db.py                 # SQLite interface — sender history, action log, state
-│
+│   └── db.py               # SQLite: senders, action_log, runs, triage, watch, stats
 ├── output/
-│   ├── reporter.py           # Generates pending_actions.json and console report
-│   └── pending_actions.json  # Written each run, read during execute phase (gitignored)
-│
+│   ├── reporter.py         # pending actions report (atomic writes) + console output
+│   └── exporter.py         # CSV inbox health export
+├── pubsub/
+│   ├── watcher.py          # gmail.users.watch registration and renewal
+│   └── webhook.py          # Pub/Sub push handling (history delta → mini-scan)
+├── web/
+│   ├── app.py              # Flask dashboard, API and webhook
+│   └── *.html              # Jinja templates
 ├── deploy/
-│   ├── Dockerfile            # Container definition for Cloud Run
-│   ├── cloudbuild.yaml       # CI/CD pipeline definition
-│   └── scheduler.sh          # Helper script to set up Cloud Scheduler job
-│
-├── requirements.txt
-└── tests/
-    └── ...
+│   ├── Dockerfile          # Cloud Run Job image
+│   ├── Dockerfile.web      # Cloud Run Service image (gunicorn)
+│   ├── deploy_job.sh       # job + scheduler + bucket + secrets
+│   ├── deploy_dashboard.sh # service + Pub/Sub + watch renewal
+│   └── cloudbuild.yaml     # CI/CD: test → build → roll out
+└── tests/                  # offline test suite (all external APIs mocked)
 ```
 
 ---
 
-## Component Breakdown
+## Components
+
+### `core/settings.py`
+
+Loads `settings.yaml` and resolves every runtime path in one place. Precedence: **environment variable → settings.yaml → default**. With an account name (`--account` / `GMAILCLEANER_ACCOUNT`), the token, database and report paths are namespaced per account. Explicit environment overrides still win, which is how Cloud Run points both containers at the shared volume.
 
 ### `auth/oauth.py`
 
-Handles the entire Google OAuth 2.0 lifecycle.
+- **Local:** the first run opens the browser consent flow (`InstalledAppFlow`). The token, which includes the refresh token, is saved to `config/token.json` with `0600` permissions and refreshed silently afterwards.
+- **Production:** `GOOGLE_TOKEN_JSON` (injected from Secret Manager) takes precedence. The authorized-user JSON already contains the client ID and secret, so no credentials file is needed. Refreshed access tokens stay in memory.
+- **Headless guard:** on Cloud Run (or with `GMAILCLEANER_HEADLESS=1`), a missing or invalid token raises a clear error instead of trying to open a browser.
 
-- On first run: launches the browser-based consent flow and requests the following scopes:
-  - `https://www.googleapis.com/auth/gmail.readonly` — for the scan phase
-  - `https://www.googleapis.com/auth/gmail.modify` — for the execute phase (delete, label, send)
-- Saves the resulting token (access token + refresh token) to `config/token.json` (gitignored).
-- On subsequent runs: loads the stored token and uses the refresh token to get a fresh access token silently. No browser interaction after the first run.
+Scopes: `gmail.readonly`, `gmail.modify`, `gmail.send`.
 
-**Why OAuth and not a Service Account?**
-Service accounts cannot access a personal Gmail inbox. OAuth is required because GmailCleaner acts on behalf of a real user. A service account is appropriate only for Google Workspace with domain-wide delegation, which is out of scope here.
+**Why OAuth and not a service account?** Service accounts cannot access a personal Gmail inbox. Domain-wide delegation applies only to Google Workspace and is out of scope.
 
----
+### `gmail/fetcher.py` and `gmail/parser.py`
 
-### `gmail/fetcher.py`
-
-Queries Gmail using the `users.messages.list` API endpoint with configurable filters.
-
-Key implementation decisions:
-- Uses **label-based filtering** (`in:inbox`, `-in:trash`) to avoid re-processing archived or deleted messages.
-- Fetches in **batches of 100** (Gmail API maximum per page) using `nextPageToken` for pagination.
-- Retrieves only `METADATA` format first (headers only — fast and cheap on quota). Full body is fetched only when the engine specifically needs it (e.g. unsubscribe URL extraction).
-- Respects the `lookback_days` setting using Gmail's `after:` query operator.
-
-**Gmail API quota:** The free tier allows 1 billion quota units per day. A metadata list request costs 5 units. A full message fetch costs 5 units. Batch requests save on HTTP overhead but not quota units.
-
----
-
-### `gmail/parser.py`
-
-Parses raw Gmail API message objects into clean internal data structures.
-
-Each parsed message becomes a `GmailMessage` dataclass:
-
-```python
-@dataclass
-class GmailMessage:
-    id: str
-    thread_id: str
-    sender: str               # Display name
-    sender_email: str         # Normalized email address
-    sender_domain: str        # e.g. "newsletter.shopify.com"
-    subject: str
-    date: datetime
-    labels: list[str]         # Gmail system labels
-    snippet: str              # First ~100 chars of body
-    list_unsubscribe: str     # Raw List-Unsubscribe header value (if present)
-    list_unsubscribe_post: str # RFC 8058 one-click unsubscribe (if present)
-```
-
-Normalization rules applied here:
-- Sender email is lowercased and stripped of display name formatting.
-- Sender domain is extracted from the email and stored separately for domain-level grouping.
-- `List-Unsubscribe` header is parsed to extract HTTP URL and/or mailto address.
-
----
+A two-step fetch: `users.messages.list` pages through IDs (up to 500 per page, bounded by `max_emails`, with the date filter applied via Gmail's `after:` operator), then `batch_get_messages` fetches **metadata only** in batches with 429 backoff. The parser normalizes each message into a `GmailMessage`: lowercased sender email and domain, UTC date, uppercase labels, and a structured `UnsubscribeTarget` (HTTP URL, mailto, one-click flag).
 
 ### `engines/unsubscribe.py`
 
-Implements RFC 2369 (`List-Unsubscribe`) and RFC 8058 (`List-Unsubscribe-Post`) detection.
+Groups messages by sender domain. It keeps domains that have a valid unsubscribe target and at least `min_email_count` messages, and skips blocked or already-unsubscribed domains. For each domain it picks the most capable target (one-click > HTTP > mailto). Candidates are ranked noisiest first.
 
-How it works:
-1. Filters parsed messages where `list_unsubscribe` header is present.
-2. Extracts the unsubscribe target — either an HTTPS URL or a `mailto:` address.
-3. Deduplicates by sender domain (one unsubscribe candidate per domain, not per email).
-4. Checks the local DB to skip senders already unsubscribed from in a previous run.
-5. Produces a list of `UnsubscribeCandidate` objects for the reporter.
-
-Execution (Phase B, after confirmation):
-- **HTTP unsubscribe:** sends a `POST` request to the URL (RFC 8058 compliant) or opens the URL via `GET` if no POST endpoint exists.
-- **Mailto unsubscribe:** composes a blank email to the unsubscribe address using the Gmail API `users.messages.send` endpoint.
-
-**Why not just click links in a headless browser?**
-Many unsubscribe links are time-limited or tied to tracking tokens. The RFC-compliant approach (hitting the `List-Unsubscribe` header target) is more reliable, faster, and does not trigger analytics tracking.
-
----
+**Why RFC headers instead of clicking links in a browser?** They are more reliable, don't fire tracking pixels, and need no browser dependency.
 
 ### `engines/bulk_cleanup.py`
 
-Groups inbox emails to identify bulk deletion candidates.
+Pass 1 groups by sender domain. Pass 2 groups the remaining messages by normalized subject, stripping numbers, dates and `#123`-style issue counters so that newsletter series cluster together. Each group is scored on volume, unread ratio, promotional signals and age, then labelled high, medium or low.
 
-Grouping strategy (applied in order):
-1. **Exact sender domain** — all emails from `@newsletters.example.com`
-2. **Subject prefix pattern** — emails sharing a normalized subject prefix (e.g. "Your daily digest from X")
-3. **Thread clustering** — emails in threads with 10+ messages from the same sender
+### `engines/triage.py` and `ai/gemini.py`
 
-Each group is scored by:
-- Total message count
-- Date of oldest message in group
-- Whether the sender domain has a `List-Unsubscribe` header (suggests newsletter, not transactional)
-- Whether all messages in the group are unread (suggests never-opened bulk mail)
+Messages that a cleanup group already claims are skipped. Results classified in the last 24h are reused from the DB. The rest go to Gemini in batches of 20, with sender, subject, snippet and labels only. The model returns JSON, which is parsed defensively: malformed or missing entries become `UNCLASSIFIED`. Results below `confidence_threshold` are flagged for review. 429 and 503 responses are retried with exponential backoff and jitter.
 
-Output: a ranked list of `CleanupGroup` objects, each containing the group metadata and the list of message IDs to delete. Presented to the user for confirmation.
+### `engines/rules.py`
 
-Execution (Phase B): calls `gmail.executor.batch_delete()` using Gmail's `batchDelete` endpoint, which supports up to 1,000 message IDs per request.
+Trusted rules are parsed from config and active **only** when `confirm_first: false`. A rule matches an exact domain or a `*.domain` wildcard (the apex plus subdomains). `blocked_senders` always override. A bare `*` is rejected. Delete rules match only domain groups, never subject groups. `apply()` marks matching report items `confirmed` + `auto_confirmed`.
 
----
+### `gmail/executor.py`
 
-### `engines/triage.py`
-
-Classifies each inbox message into one of four buckets using Gemini.
-
-Buckets:
-- `NEEDS_REPLY` — direct messages, questions, requests addressed to you
-- `FYI` — receipts, confirmations, status updates worth keeping but no action needed
-- `PROMOTIONS` — marketing, newsletters, offers
-- `JUNK` — obvious noise with no value
-
-What is sent to Gemini per message:
-```
-Sender: newsletters@example.com
-Subject: Your weekly roundup is here
-Snippet: Here's what happened this week in tech...
-Labels: INBOX, UNREAD
-```
-
-Body content is **never sent**. Classification is done purely on metadata. This is a deliberate privacy decision and also keeps token usage low.
-
-Gemini is prompted to return a JSON array of `{ message_id, bucket, confidence, reason }` objects. Responses are parsed and stored in the DB. Low-confidence classifications (below a configurable threshold) are flagged for user review rather than auto-assigned.
-
----
+- **Unsubscribe:** RFC 8058 one-click POST (`List-Unsubscribe=One-Click`), otherwise a GET, falling back to mailto via the Gmail API. HTTP 200/202/204/302 count as success. A 1s courtesy delay separates requests.
+- **Cleanup:** `users.messages.batchModify` adds `TRASH` and removes `INBOX` in chunks of 1,000. Messages are recoverable for 30 days. Permanent `batchDelete` is deliberately not used: it would need the full `https://mail.google.com/` scope, and nothing could be undone.
+- **`execute_report()`:** runs every confirmed item that has no `executed_at` yet, stamps successes, updates `action_log`, and records an `execute` run. Running it again is safe.
 
 ### `engines/digest.py`
 
-Builds and sends the daily summary email to your inbox.
+Builds an HTML email (needs-reply items, FYI, promotions with unsubscribe candidates, junk with cleanup groups, items needing review) and sends it to the configured recipient, or to the account itself. When `DASHBOARD_URL` is set, it links straight to the Pending page.
 
-The digest contains:
-- Count of new messages since last run
-- Top items in `NEEDS_REPLY` (up to 5, with sender, subject, snippet)
-- Count of `PROMOTIONS` and `JUNK` detected
-- Pending unsubscribe candidates waiting for confirmation
-- Pending bulk cleanup groups waiting for confirmation
-- A confirmation link / command to execute the pending actions
+### `output/reporter.py` and `output/exporter.py`
 
-The digest is sent as an HTML email via `gmail.executor.send_email()`. It is addressed to the same account GmailCleaner is authorized on, so no external email infrastructure is needed.
-
----
-
-### `ai/gemini.py`
-
-Thin wrapper around the Gemini 1.5 Flash API (via Google AI Studio / Vertex AI).
-
-- Uses the `generativelanguage.googleapis.com` REST API directly (no SDK dependency required).
-- Sends classification prompts in batches of up to 20 messages per request to reduce API call count.
-- Parses responses defensively — if the model returns malformed JSON or unexpected structure, the affected messages are flagged as `UNCLASSIFIED` and included in the digest for manual review.
-- Implements exponential backoff for rate limit responses (HTTP 429).
-
-**Gemini 1.5 Flash free tier:** 15 requests per minute, 1 million tokens per day, 1,500 requests per day (as of 2025). For a personal inbox scan, this is more than sufficient.
-
----
+The reporter writes `pending_actions.json` **atomically** (temp file + rename), so the job, dashboard and webhook never see a half-written file. It also merges real-time unsubscribe candidates into the existing report. The exporter renders `summary`, `senders`, `actions` and `runs` as CSV for `main.py export` and the dashboard's `/export/<dataset>.csv`.
 
 ### `store/db.py`
 
-SQLite database for persistent state across runs.
-
-Tables:
-
 ```sql
--- Tracks every sender seen, with metadata
-CREATE TABLE senders (
-    domain TEXT PRIMARY KEY,
-    display_name TEXT,
-    first_seen DATE,
-    last_seen DATE,
-    email_count INTEGER,
-    unsubscribed_at DATE,
-    trusted BOOLEAN DEFAULT FALSE,
-    blocked BOOLEAN DEFAULT FALSE
-);
-
--- Full log of every action taken
-CREATE TABLE action_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT,
-    action_type TEXT,         -- 'unsubscribe', 'delete', 'label', 'skip'
-    target TEXT,              -- message ID or sender domain
-    status TEXT,              -- 'pending', 'confirmed', 'executed', 'failed'
-    executed_at DATETIME,
-    error TEXT
-);
-
--- Per-run metadata
-CREATE TABLE runs (
-    id TEXT PRIMARY KEY,
-    started_at DATETIME,
-    completed_at DATETIME,
-    emails_scanned INTEGER,
-    actions_pending INTEGER,
-    actions_executed INTEGER
-);
+senders            -- domain, display_name, first/last_seen, email_count, unsubscribed_at, method, trusted, blocked
+action_log         -- run_id, action_type, target, target_meta, status, created/executed_at, error
+                   --   status: pending | confirmed | executed | failed | skipped | superseded
+runs               -- id, mode (scan|execute), timestamps, scanned / pending / executed / failed counts
+triage_results     -- message_id, bucket, confidence, reason, model, classified_at
+watch_registration -- singleton: history_id, expiration_ms, topic_name
+inbox_events       -- per-notification counts for dashboard charts
+kv_store           -- last processed Gmail historyId
 ```
 
-The DB file lives at `data/gmailcleaner.db` (gitignored). On Cloud Run, it is mounted via a Cloud Storage FUSE volume or replaced with Firestore for production deployments.
+The journal mode is configurable (`SQLITE_JOURNAL_MODE`). WAL is used on local disk and DELETE on the Cloud Storage FUSE volume, which cannot provide WAL's shared memory.
+
+### `pubsub/watcher.py` and `pubsub/webhook.py`
+
+`users.watch` registers the Inbox with the Pub/Sub topic. Gmail expires watches after 7 days, so Cloud Scheduler calls `POST /api/watch/renew` daily. On each push, the webhook:
+
+1. verifies the OIDC JWT (audience = the webhook URL, issuer = the configured service account),
+2. decodes `{emailAddress, historyId}` and skips anything older than the stored baseline,
+3. reads `users.history.list` since the baseline. History records carry IDs only, so metadata is then batch-fetched,
+4. runs unsubscribe detection and triage on just those messages, merges new candidates into the report, increments sender counts and records an inbox event,
+5. advances the baseline and always returns 200, so Pub/Sub doesn't retry forever.
+
+### `web/app.py`
+
+A Flask app served by gunicorn (one worker, eight threads, because of the single SQLite writer). Routes: `/`, `/pending`, `/stats`, `/history`, `/export/<dataset>.csv`, `/health`, `POST /api/confirm`, `POST /api/execute`, `POST /api/watch/renew`, `POST /webhook/pubsub`.
+
+Authentication uses `DASHBOARD_SECRET`, accepted as a Bearer header, a `?token=` parameter (which sets an HttpOnly, SameSite=Strict, Secure cookie) or that cookie, and is compared in constant time. The SameSite=Strict cookie also protects the POST APIs from cross-site requests.
 
 ---
 
-### `output/reporter.py`
-
-Produces two outputs at the end of each scan:
-
-**1. `pending_actions.json`** — machine-readable, used by the execute phase:
-```json
-{
-  "run_id": "2025-05-16T07:00:00",
-  "unsubscribe": [
-    { "domain": "newsletter.example.com", "display_name": "Example Weekly", "count": 47 }
-  ],
-  "delete_groups": [
-    { "group_id": "grp_001", "domain": "deals.shop.com", "count": 132, "oldest": "2024-11-01" }
-  ],
-  "triage": {
-    "needs_reply": [...],
-    "promotions_count": 84,
-    "junk_count": 23
-  }
-}
-```
-
-**2. Console / log output** — human-readable summary printed to stdout (visible in Cloud Run logs).
-
----
-
-## Cloud Run Deployment
-
-GmailCleaner is packaged as a Docker container and deployed as a **Cloud Run Job** (not a Service). A Job runs to completion and exits — it does not expose an HTTP endpoint or stay running.
-
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY . .
-RUN pip install --no-cache-dir -r requirements.txt
-CMD ["python", "main.py", "--mode=scan"]
-```
-
-Cloud Scheduler fires the job on a cron schedule. The job authenticates using a **Google Service Account** (not OAuth) for the Cloud Run infrastructure itself. The Gmail OAuth token is stored as a **Secret Manager secret** and injected at runtime via environment variable — it never lives in the container image.
+## Data flow
 
 ```
-Cloud Scheduler
-  └── triggers → Cloud Run Job (GmailCleaner container)
-                    ├── reads Gmail OAuth token from Secret Manager
-                    ├── runs scan pipeline
-                    ├── writes pending_actions.json to Cloud Storage
-                    └── sends digest email via Gmail API
+Gmail inbox
+   │  users.messages.list + batch get (metadata)
+   ▼
+fetcher.py → parser.py ──► GmailMessage[]
+   │
+   ├──► unsubscribe.py ─┐
+   ├──► bulk_cleanup.py ┼──► triage.py (Gemini) ──► digest.py ──► email to you
+   │                    │
+   ▼                    ▼
+reporter.py ──► pending_actions.json ◄── webhook.py (real-time candidates)
+   │
+   ├── rules.py (auto-confirm, if enabled)
+   ├── dashboard / JSON edit (manual confirm)
+   ▼
+executor.py ──► unsubscribe (POST/GET/mailto) · batchModify → Trash
+   │
+   ▼
+db.py (action_log, senders, runs)
 ```
 
 ---
 
-## Phase 4: Gmail Pub/Sub Integration
-
-Instead of polling on a schedule, Gmail can push real-time notifications to a Pub/Sub topic when your inbox changes.
-
-Setup:
-1. Create a Pub/Sub topic in your GCP project.
-2. Call `gmail.users.watch()` to register the topic with Gmail. Gmail will publish a notification every time a new message arrives or a label changes.
-3. Create a Pub/Sub push subscription pointing to a Cloud Run **Service** (a persistent HTTP endpoint, unlike the Job used for scheduled scans).
-4. The Cloud Run Service receives the push, fetches only the changed messages, and runs a mini scan on them.
-
-This replaces the daily cron with near-instant processing. The daily digest is still generated by the scheduled Job, but triage and unsubscribe detection happen within seconds of a new email arriving.
-
----
-
-## Data Flow Summary
-
-```
-Gmail Inbox
-    │
-    ▼
-fetcher.py          ← users.messages.list (metadata format, paginated)
-    │
-    ▼
-parser.py           ← normalizes to GmailMessage dataclasses
-    │
-    ├──────────────────────────────────────────────┐
-    ▼                                              ▼
-unsubscribe.py                              bulk_cleanup.py
-(RFC 2369 header detection)                 (domain + subject grouping)
-    │                                              │
-    └──────────────────┬────────────────────────────┘
-                       ▼
-                  triage.py
-              (Gemini classification)
-                       │
-                       ▼
-                  reporter.py
-              (pending_actions.json)
-                       │
-                       ▼
-                  digest.py
-              (sends email to user)
-                       │
-              ┌────────▼────────┐
-              │  USER REVIEWS   │
-              │  AND CONFIRMS   │
-              └────────┬────────┘
-                       ▼
-                  executor.py
-          (batchDelete / unsubscribe / label)
-                       │
-                       ▼
-                    db.py
-                (action_log update)
-```
-
----
-
-## Key Technical Decisions
+## Key technical decisions
 
 | Decision | Rationale |
 |---|---|
-| Cloud Run Job (not a server) | Free tier, zero idle cost, no infra to manage |
-| SQLite over Firestore (Phase 1–2) | Zero cost, zero setup, sufficient for single-user use |
-| Metadata-only fetch for triage | Privacy (no body sent to AI), quota efficiency |
-| RFC 2369 unsubscribe over browser automation | More reliable, no tracking pixel triggers, no browser dependency |
-| Gemini Flash over GPT-4 / Claude | Free tier available, Google-native (same GCP project), sufficient for classification |
-| Confirm-first as default | Trust and safety — destructive actions require explicit user approval |
-| Secret Manager for OAuth token | OAuth tokens are credentials; never bake into container images or env files |
+| Cloud Run Job for scans, Service for the dashboard | Scans need no idle server; the dashboard scales to zero between visits |
+| SQLite on a Cloud Storage volume | Zero cost and zero setup for a single-user workload; one writer instance |
+| Trash instead of permanent delete | Recoverable mistakes, and no need for the full-mailbox scope |
+| Metadata-only fetch and AI input | Privacy, plus lower quota and token usage |
+| RFC 2369/8058 unsubscribe | Reliable, no tracking-pixel triggers, no browser |
+| Gemini Flash | Free tier available, sufficient for classification, same Google project |
+| Confirm-first by default; trusted rules opt-in | Destructive actions need explicit approval |
+| Token in Secret Manager, injected as env | Credentials never live in images or the repo |
+| Shared `execute_report()` | CLI, dashboard and trusted rules can't drift apart |
 
 ---
 
-## Security Considerations
+## Security considerations
 
-- The OAuth token grants `gmail.modify` scope — treat it like a password. Store it only in Secret Manager in production.
-- The `pending_actions.json` file contains email metadata (sender names, subjects). It is gitignored and should not be committed or shared.
-- Cloud Run Jobs run in an isolated container with no inbound network access. The only outbound calls are to the Gmail API, Gemini API, and Secret Manager — all within Google's infrastructure.
+- The OAuth token grants `gmail.modify` and `gmail.send`. Treat it like a password: store it in Secret Manager in production and never commit it (`config/token.json` and `config/tokens/` are gitignored and excluded from Docker builds).
+- `pending_actions.json` and the database contain sender names and subjects. They are gitignored and live only on your machine or in your private bucket, which has public access prevention enabled.
+- The dashboard service is reachable on the internet but enforces token authentication. The webhook accepts only Google-signed tokens for the configured audience and service account.
+- Containers run as a non-root user. The only outbound calls go to the Gmail API, the Gemini API and the unsubscribe endpoints that senders publish.
 - GmailCleaner never stores email body content anywhere.

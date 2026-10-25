@@ -2,208 +2,251 @@
 
 > A self-hosted, privacy-first Gmail intelligence engine. No subscriptions. No data selling. You own your inbox.
 
+[![CI](https://github.com/akadeepesh/GmailCleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/akadeepesh/GmailCleaner/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 ---
 
 ## What is GmailCleaner?
 
-GmailCleaner is an open-source tool that runs on a schedule against your Gmail inbox. It identifies junk, surfaces what matters, and asks for your confirmation before taking any action. Nothing is deleted or unsubscribed without your explicit approval.
+GmailCleaner runs on a schedule against your Gmail inbox. It finds junk, shows you what matters, and asks for your confirmation before it does anything. Nothing is unsubscribed or cleaned up without your explicit approval, unless you opt in to rules that you write yourself.
 
-This is the philosophy of the project: **show first, act second**.
+The philosophy is simple: **show first, act second.**
 
 ---
 
 ## Features
 
-### Unsubscribe Engine
-Detects emails with `List-Unsubscribe` headers and extracts the unsubscribe method (HTTP link or mailto). Presents you a list of senders you can choose to unsubscribe from — one click per sender, or confirm all at once.
+**Unsubscribe engine.** Detects `List-Unsubscribe` headers (RFC 2369) and one-click unsubscribe (RFC 8058). It proposes one candidate per sender domain and unsubscribes through the most reliable method available: one-click POST, then HTTP, then mailto.
 
-### Bulk Cleanup
-Groups emails by sender domain and subject patterns to identify repetitive clutter. Shows you the groups with counts and previews. You choose which groups to delete.
+**Bulk cleanup.** Groups clutter by sender domain and by repeating subject patterns (e.g. "Weekly Digest #1, #2, #3…"), then ranks each group by volume, how often it goes unread, and how promotional it looks. Confirmed groups are **moved to Trash**, so they stay recoverable for 30 days.
 
-### Smart Triage
-Classifies your inbox using AI into priority buckets: **Needs Reply**, **FYI / Read Later**, **Promotions**, and **Junk**. You review the classification before any labels are applied or emails are moved.
+**AI triage.** Gemini sorts your inbox into **Needs Reply**, **FYI**, **Promotions** and **Junk**. Low-confidence results are flagged for review instead of being guessed. Only metadata is sent: sender, subject, snippet and labels, never the email body.
 
-### Daily Digest
-Every morning, you receive a single email summarizing your inbox: what needs attention, what arrived overnight, and what GmailCleaner is queued to act on pending your approval.
+**Daily digest.** One email per scan: what needs a reply, what's noise, and what's waiting for your approval, with a link straight to the dashboard.
 
----
+**Web dashboard.** Review and confirm pending actions, execute them with one click, see inbox stats and run history, and download CSV exports.
 
-## Confirm-First Model
+**Real-time processing.** Gmail Pub/Sub push notifications trigger unsubscribe detection and triage within seconds of new mail arriving.
 
-Every action in GmailCleaner goes through a confirmation step. When the job runs, it produces a **pending actions report** — a structured list of what it wants to do. You review and approve. Only then does it execute.
+**Trusted rules.** Pre-approve specific senders (e.g. "always unsubscribe from `news.example.com`") so routine cleanup runs unattended.
 
-In future releases, users will be able to configure trusted rules (e.g. "always delete from this domain", "auto-unsubscribe from anything tagged Promotions") to skip confirmation for actions they are comfortable automating.
+**Multi-account.** Manage several Gmail accounts from one install. Each gets its own token, database and report.
+
+**Inbox health export.** Sender, action, run and summary data as CSV, from the CLI or the dashboard.
 
 ---
 
-## Tech Stack
+## How it works
 
-| Layer | Technology |
-|---|---|
-| Language | Python 3.11+ |
-| Gmail Access | Gmail API via Google OAuth 2.0 |
-| AI Classification | Gemini 1.5 Flash (free tier) via Google AI Studio |
-| Scheduling | Google Cloud Scheduler (triggers Cloud Run jobs) |
-| Hosting | Google Cloud Run (serverless, free tier eligible) |
-| State / Memory | SQLite (local) or Cloud Firestore (GCP, optional) |
-| Notifications | Gmail API (sends digest to your own inbox) |
+```
+ scan ─► fetch metadata ─► unsubscribe / cleanup / triage engines ─► digest email
+                                                                     │
+                                                    pending_actions.json (report)
+                                                                     │
+                             you confirm (dashboard, JSON or trusted rules)
+                                                                     │
+ execute ─► one-click / HTTP / mailto unsubscribe · move groups to Trash ─► action log
+```
 
----
-
-## Project Phases
-
-### Phase 1 — Gmail OAuth + Unsubscribe Engine
-Connect to Gmail, read inbox, detect `List-Unsubscribe` headers, generate a dry-run report of unsubscribe candidates. No actions are taken yet.
-
-**What you learn:** Gmail API scopes, OAuth 2.0 authorization flow, refresh tokens, reading email headers, RFC 2369.
-
-### Phase 2 — Bulk Cleanup + GCP Deployment
-Build sender-grouping logic, add the delete workflow (confirm-first), and deploy to Google Cloud Run with Cloud Scheduler as the trigger.
-
-**What you learn:** Gmail API batch requests, threading model, GCP project setup, Cloud Run jobs, Cloud Scheduler cron syntax, IAM basics.
-
-### Phase 3 — AI Triage + Daily Digest
-Integrate Gemini to classify emails, generate triage buckets, and produce the daily digest email.
-
-**What you learn:** Gemini API, prompt engineering for classification tasks, structured output parsing, composing and sending email via Gmail API.
-
-### Phase 4 — Real-time Processing + Web Dashboard
-Replace polling with Gmail Pub/Sub push notifications. Add a lightweight dashboard to review pending actions, configure rules, and see inbox stats.
-
-**What you learn:** Google Cloud Pub/Sub, webhook handling, basic web UI deployment on Cloud Run.
+Every scan produces a **pending actions report**. Every item in it starts as `"confirmed": false`. Only confirmed items are executed, and each is executed once.
 
 ---
 
-## Getting Started
+## Quick start (local)
 
 ### Prerequisites
 
-- A Google account
-- Google Cloud project (free tier is sufficient for all phases)
-- Python 3.11+ or Node.js 20+
-- `gcloud` CLI installed and authenticated
+- Python 3.11+
+- A Google account and a Google Cloud project (the free tier is enough)
+- Optional: a [Google AI Studio](https://aistudio.google.com/app/apikey) API key for AI triage and the digest
 
-### 1. Clone the repository
+### 1. Install
 
 ```bash
-git clone https://github.com/yourusername/GmailCleaner.git
+git clone https://github.com/akadeepesh/GmailCleaner.git
 cd GmailCleaner
-```
-
-### 2. Set up Google Cloud
-
-```bash
-# Authenticate
-gcloud auth login
-
-# Create a new project
-gcloud projects create gmail-cleaner --name="GmailCleaner"
-gcloud config set project gmail-cleaner
-
-# Enable required APIs
-gcloud services enable gmail.googleapis.com
-gcloud services enable run.googleapis.com
-gcloud services enable cloudscheduler.googleapis.com
-```
-
-### 3. Configure OAuth credentials
-
-- Go to [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials
-- Create an **OAuth 2.0 Client ID** (Desktop app for local dev, Web app for Cloud Run)
-- Download the credentials JSON and place it at `config/credentials.json`
-
-### 4. Install dependencies
-
-```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+cp env.example .env              # then add GEMINI_API_KEY if you have one
 ```
 
-### 5. Run locally in dry-run mode
+### 2. Create OAuth credentials
+
+1. In the [Google Cloud Console](https://console.cloud.google.com), enable the **Gmail API** for your project.
+2. Configure the **OAuth consent screen** (External, add yourself as a user), then **publish it to "In production"**. While an app is in *Testing*, Google expires refresh tokens after 7 days, and scheduled runs would start failing. For personal use you don't need verification; you'll just click through an "unverified app" warning once.
+3. Under **APIs & Services → Credentials**, create an **OAuth client ID** of type **Desktop app**, download the JSON, and save it as `config/credentials.json`.
+
+### 3. Sign in and scan
 
 ```bash
-python main.py scan
+python main.py info     # opens the browser once to authorize, then shows your account
+python main.py scan     # writes output/pending_actions.json, changes nothing
 ```
 
-This authenticates, scans your inbox, and writes `output/pending_actions.json` — a report of what GmailCleaner would do — without touching anything. `confirm_first: true` in `config/settings.yaml` is the master safety switch and is on by default.
+### 4. Review and execute
 
-Other useful commands:
+Either open the dashboard:
 
 ```bash
-python main.py info            # show authenticated account + config summary
-python main.py setup-watch     # register Gmail Pub/Sub push notifications (Phase 4)
+python -m web.app       # http://127.0.0.1:8080 → Pending Actions
 ```
 
-### 6. Review and confirm
-
-Open `output/pending_actions.json`, set `"confirmed": true` on the unsubscribe/delete items you approve, then run:
+…or edit `output/pending_actions.json` and set `"confirmed": true` on the items you approve. Then run:
 
 ```bash
-python main.py execute --session output/pending_actions.json
+python main.py execute
 ```
+
+---
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `python main.py info` | Authorizes on first use, then shows the account and a summary of the active configuration |
+| `python main.py scan` | Scans, sends the digest, writes the pending actions report. Changes nothing in Gmail |
+| `python main.py scan --no-dry-run` | Same as above, then executes actions approved by trusted rules (needs `confirm_first: false`) |
+| `python main.py execute [--session PATH] [--yes]` | Executes confirmed, not-yet-executed actions from the report |
+| `python main.py export [--out DIR]` | Writes `summary.csv`, `senders.csv`, `actions.csv` and `runs.csv` |
+| `python main.py setup-watch` | Registers Gmail push notifications for local or self-hosted setups |
+| `python main.py --version` | Prints the version |
+
+Global options: `--account NAME`, `--config PATH`, `--log-level LEVEL`.
 
 ---
 
 ## Configuration
 
-All configuration lives in `config/settings.yaml`:
+All settings live in [`config/settings.yaml`](config/settings.yaml), which documents every option inline. The key ones:
 
 ```yaml
 scan:
-  max_emails: 500           # How many emails to scan per run
-  lookback_days: 30         # How far back to look
+  max_emails: 500                 # per run
+  lookback_days: 30
+  query_filter: "in:inbox -in:trash -in:spam"
 
 triage:
   enabled: true
-  model: gemini-1.5-flash
+  model: gemini-3.5-flash
+  confidence_threshold: 0.75      # below this → "Needs Review"
 
 digest:
   enabled: true
-  send_time: "07:00"        # Digest delivery time (your local timezone)
-  recipient: your@gmail.com
+  recipient: ""                   # empty = send to the authenticated account
 
-confirm_first: true         # Master switch — set false to enable auto-execution (advanced users)
+confirm_first: true               # master safety switch
+trusted_rules: []                 # see below
+blocked_senders: []               # never touched, whatever else is configured
+```
 
-trusted_senders: []         # Senders GmailCleaner may auto-act on without confirmation
-blocked_senders: []         # Senders to always skip / never touch
+Environment variables override the file (see [`env.example`](env.example)). This is how the Cloud Run deployment points the app at its shared storage.
+
+### Trusted rules
+
+Trusted rules let specific actions skip manual confirmation. They are honoured **only** when `confirm_first: false`:
+
+```yaml
+confirm_first: false
+trusted_rules:
+  - action: unsubscribe          # unsubscribe | delete (move to Trash)
+    domain: news.example.com     # exact sender domain
+  - action: delete
+    domain: "*.deals.example"    # the domain and all of its subdomains
+  - promo.example.org            # shorthand: both actions for this domain
+```
+
+`scan --no-dry-run`, which is what the scheduled job runs, executes matching actions automatically. A plain `scan` only marks them as confirmed so you can see what would happen. Safety limits:
+
+- `blocked_senders` always win.
+- A bare `*` wildcard is rejected.
+- Subject-pattern cleanup groups span many senders, so they always need manual confirmation.
+
+Auto-confirmed items are labelled "by trusted rule" on the dashboard.
+
+### Multiple accounts
+
+```bash
+python main.py --account work info      # authorize the work account
+python main.py --account work scan
+python main.py --account personal scan
+```
+
+Each account keeps its own `config/tokens/<account>.json`, `data/<account>/gmailcleaner.db` and `output/<account>/pending_actions.json`. To run the dashboard for one account, set `GMAILCLEANER_ACCOUNT=work`.
+
+---
+
+## Deploying to Google Cloud
+
+The production setup runs entirely inside your own GCP project and fits within the free tier for personal use:
+
+| Component | Runs as | Purpose |
+|---|---|---|
+| Scheduled scan | Cloud Run **Job** + Cloud Scheduler | Daily scan, digest, trusted-rule execution |
+| Dashboard + webhook | Cloud Run **Service** | Review/execute actions, receive Pub/Sub pushes |
+| Shared state | Cloud Storage bucket (mounted as a volume) | SQLite DB and pending actions report |
+| Secrets | Secret Manager | OAuth token, Gemini key, dashboard secret |
+
+Prerequisites: the `gcloud` CLI (authenticated), Docker, billing enabled, and `config/token.json` created by `python main.py info`.
+
+```bash
+# 1. Scheduled scan (default 07:00 UTC daily)
+GCP_PROJECT_ID=my-project \
+GEMINI_API_KEY=... \
+SCAN_SCHEDULE="0 7 * * *" SCAN_TIMEZONE="Europe/London" \
+./deploy/deploy_job.sh
+
+# 2. Dashboard + real-time Pub/Sub (optional but recommended)
+GCP_PROJECT_ID=my-project ./deploy/deploy_dashboard.sh
+```
+
+Both scripts are idempotent, so re-run them to redeploy. At the end, the dashboard script prints the service URL and how to read the dashboard secret. Open `https://<service-url>/?token=<secret>` once; a secure, HttpOnly cookie keeps you signed in after that.
+
+For continuous delivery, connect [`deploy/cloudbuild.yaml`](deploy/cloudbuild.yaml) to a Cloud Build trigger on `main`. It runs the tests, builds both images and rolls them out.
+
+Useful operations:
+
+```bash
+gcloud run jobs execute gmail-cleaner --region=us-central1                      # scan now
+gcloud run jobs execute gmail-cleaner --region=us-central1 --args=execute,--yes # execute confirmed
 ```
 
 ---
 
-## Privacy
+## Privacy & security
 
-- GmailCleaner runs entirely inside your own GCP project — no shared servers.
-- AI classification sends only subject lines and sender names to Gemini — never email body content.
-- OAuth tokens are stored locally in your environment and never leave it.
-- No analytics, no telemetry, no data collection of any kind.
+- **Your project, your data.** Everything runs in your own GCP project or on your own machine. There are no shared servers, analytics or telemetry.
+- **Metadata only.** Email bodies are never fetched. Gemini receives sender, subject, a short snippet and labels.
+- **Recoverable cleanup.** Cleanup moves mail to Trash. GmailCleaner never permanently deletes anything and doesn't request the full-mailbox `https://mail.google.com/` scope.
+- **Least-privilege scopes.** `gmail.readonly`, `gmail.modify` (labels and Trash) and `gmail.send` (the digest and mailto unsubscribes).
+- **Secrets stay secret.** The OAuth token is stored locally with `0600` permissions or in Secret Manager, and never baked into an image.
+- **Authenticated endpoints.** The dashboard requires `DASHBOARD_SECRET` (compared in constant time). The webhook verifies Pub/Sub's signed OIDC token, including its audience and service account.
+- Treat `pending_actions.json` and the database as personal data: they contain senders and subjects.
 
----
-
-## Project Status
-
-**All four phases are implemented and passing tests (254/254).** This is further along than the checklist below used to suggest — code for OAuth, unsubscribe detection, bulk cleanup, GCP deployment, Gemini-based triage, the daily digest, Pub/Sub real-time watching, and the Flask web dashboard all exist and run.
-
-- [x] Phase 1: OAuth + Unsubscribe detection (dry-run)
-- [x] Phase 2: Bulk cleanup + Cloud Run deployment
-- [x] Phase 3: AI triage (Gemini) + daily digest
-- [x] Phase 4: Pub/Sub real-time + web dashboard
-- [ ] Trusted rules engine (config field `trusted_rules` and `confirm_first` exist and are read by the executor, but no code path yet acts on `trusted_rules` to bypass confirmation automatically — currently every action still requires manual confirmation)
-- [ ] Multi-account support
-- [ ] Inbox health export (PDF / CSV)
-
-### Known gaps / before you deploy this publicly
-
-- `gmail/executor.py` — the module that performs **permanent, un-trashed deletion** via `batchDelete` and sends unsubscribe requests — has an empty test file (`tests/test_executer.py`). Everything else has real test coverage; this doesn't yet.
-- `config/settings.yaml` ships with a real personal email hardcoded as the digest `recipient`. Replace it with your own address (or a placeholder) before committing/sharing this repo.
-- Two bugs were found and fixed during review: the Flask app's `template_folder` pointed at a nonexistent `templates/` subfolder (the entire web dashboard 404'd), and the subject-clustering regex in the bulk cleanup engine didn't correctly strip `#123`-style issue numbers, so numbered newsletter series (e.g. "Weekly Digest #1", "#2", "#3") failed to group. Both are fixed as of this commit.
+> Running the dashboard without `DASHBOARD_SECRET` disables authentication. Do that only on `127.0.0.1`.
 
 ---
 
-## Contributing
+## Limitations
 
-Contributions are welcome. Please open an issue before submitting a PR so the change can be discussed first. See `CONTRIBUTING.md` for guidelines.
+- State is a single SQLite file. On Cloud Run it lives on a Cloud Storage volume with one dashboard instance. That's ideal for one person's inbox, but not designed for many concurrent writers.
+- Some senders' unsubscribe endpoints require a browser or a login. Those show up as failed actions, and you can unsubscribe manually.
+- Real-time processing covers new mail in the Inbox. Bulk cleanup groups are recalculated by the scheduled scan.
+
+---
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The test suite runs fully offline: Gmail, Gemini and HTTP are all mocked. See [Architecture.md](Architecture.md) for the internals and [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
 ## License
 
-MIT License. See `LICENSE` for details.
+MIT. See [LICENSE](LICENSE).
