@@ -6,9 +6,11 @@ Flow:
   1. Gmail detects inbox change → publishes to Pub/Sub topic
   2. Pub/Sub push subscription delivers POST to /webhook/pubsub on this service
   3. We decode the notification, extract historyId
-  4. Fetch only the changed messages since the last known historyId
+  4. Fetch only the messages added since the last known historyId
+     (history.list returns IDs only, so metadata is fetched in a batch)
   5. Run a mini-scan: unsubscribe detection + triage on just the new messages
-  6. Update pending_actions and DB — no digest sent (that's the scheduled job's job)
+  6. Merge new unsubscribe candidates into pending_actions.json and update the DB
+     — no digest is sent (that is the scheduled scan's job)
   7. Return HTTP 200 to acknowledge the Pub/Sub message
      (non-200 → Pub/Sub retries with exponential backoff, up to the subscription deadline)
 
@@ -31,16 +33,16 @@ Security:
 import base64
 import json
 import logging
-import os
-from datetime import datetime, timezone
+from collections import Counter
 from typing import Optional
 
 from googleapiclient.errors import HttpError
 
 from gmail.client import GmailClient
-from gmail.parser import parse_messages
+from gmail.parser import METADATA_HEADERS, parse_messages
 from engines.unsubscribe import UnsubscribeEngine
 from engines.triage import TriageEngine
+from output.reporter import merge_unsubscribe_candidates
 from store.db import Database
 
 logger = logging.getLogger(__name__)
@@ -97,7 +99,7 @@ class WebhookHandler:
       - Fetches messages changed since the last known historyId
       - Runs unsubscribe detection on new messages
       - Runs triage on new messages (using cached Gemini results where possible)
-      - Updates the DB with new pending actions
+      - Merges new unsubscribe candidates into the pending actions report
       - Updates the stored historyId baseline
 
     The daily digest and full bulk-cleanup scan are still handled by the Cloud Run Job.
@@ -109,11 +111,13 @@ class WebhookHandler:
         db: Database,
         unsub_engine: UnsubscribeEngine,
         triage_engine: Optional[TriageEngine],
+        pending_actions_path: Optional[str] = None,
     ) -> None:
         self._client = client
         self._db = db
         self._unsub_engine = unsub_engine
         self._triage_engine = triage_engine
+        self._pending_actions_path = pending_actions_path
 
     def handle(self, notification: PubSubNotification) -> dict:
         """
@@ -166,14 +170,22 @@ class WebhookHandler:
         if self._triage_engine:
             triage_summary = self._triage_engine.classify(new_messages)
 
-        # Update sender records in DB.
-        for msg in new_messages:
-            if msg.sender_domain:
-                self._db.upsert_sender(
-                    domain=msg.sender_domain,
-                    display_name=msg.sender_name or None,
-                    email_count=1,
-                )
+        # Surface new unsubscribe candidates on the dashboard immediately.
+        if unsub_candidates and self._pending_actions_path:
+            try:
+                merge_unsubscribe_candidates(unsub_candidates, self._pending_actions_path)
+            except OSError as exc:
+                logger.warning("Could not merge candidates into pending actions: %s", exc)
+
+        # Update sender records in DB (increment — the webhook sees a delta).
+        per_domain = Counter(m.sender_domain for m in new_messages if m.sender_domain)
+        names = {m.sender_domain: m.sender_name for m in new_messages if m.sender_name}
+        for domain, count in per_domain.items():
+            self._db.increment_sender(
+                domain=domain,
+                display_name=names.get(domain) or None,
+                count=count,
+            )
 
         # Update DB inbox stats for the dashboard.
         self._db.record_inbox_event(
@@ -201,13 +213,23 @@ class WebhookHandler:
         Fetch messages added to the inbox since the given historyId.
 
         Uses the Gmail History API (users.history.list) which is much more
-        efficient than a full inbox scan — it returns only the delta.
+        efficient than a full inbox scan — it returns only the delta. History
+        records carry only message/thread IDs, so headers are then fetched
+        in one metadata batch.
         """
         try:
-            raw_messages = self._client.list_history(
+            history = self._client.list_history(
                 start_history_id=start_history_id,
                 history_types=["messageAdded"],
                 label_id="INBOX",
+            )
+            message_ids = list(dict.fromkeys(m["id"] for m in history if m.get("id")))
+            if not message_ids:
+                return []
+            raw_messages = self._client.batch_get_messages(
+                message_ids,
+                format="metadata",
+                metadata_headers=METADATA_HEADERS,
             )
             return parse_messages(raw_messages)
         except HttpError as exc:
@@ -227,7 +249,11 @@ class WebhookHandler:
 # JWT verification
 # ──────────────────────────────────────────────────────────────────────────────
 
-def verify_pubsub_token(authorization_header: Optional[str], audience: str) -> bool:
+def verify_pubsub_token(
+    authorization_header: Optional[str],
+    audience: str,
+    expected_email: Optional[str] = None,
+) -> bool:
     """
     Verify the Google-signed OIDC JWT that Pub/Sub includes in push requests.
 
@@ -237,7 +263,8 @@ def verify_pubsub_token(authorization_header: Optional[str], audience: str) -> b
 
     Args:
         authorization_header: The full "Authorization: Bearer <token>" header value.
-        audience:             The expected audience (your Cloud Run service URL).
+        audience:             The expected audience (the push endpoint URL).
+        expected_email:       If set, the service account the token must be issued to.
 
     Returns:
         True if the token is valid, False otherwise.
@@ -251,11 +278,16 @@ def verify_pubsub_token(authorization_header: Optional[str], audience: str) -> b
     try:
         from google.oauth2 import id_token
         from google.auth.transport import requests as google_requests
-        id_token.verify_oauth2_token(
+        claims = id_token.verify_oauth2_token(
             token,
             google_requests.Request(),
             audience=audience,
         )
+        if expected_email and (
+            claims.get("email") != expected_email or not claims.get("email_verified")
+        ):
+            logger.warning("Webhook JWT issued to unexpected principal %s", claims.get("email"))
+            return False
         return True
     except Exception as exc:
         logger.warning("Webhook JWT verification failed: %s", exc)
