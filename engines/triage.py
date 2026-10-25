@@ -1,6 +1,6 @@
 """
 GmailCleaner — Triage Engine
-Classifies inbox messages into four buckets using Gemini 1.5 Flash.
+Classifies inbox messages into four buckets using Gemini (model set in settings.yaml).
 
 Buckets (in priority order for the digest):
   NEEDS_REPLY  — Direct messages requiring a response
@@ -12,7 +12,7 @@ Privacy guarantee:
   Only sender email, subject, snippet (first ~120 chars), and Gmail labels
   are sent to Gemini. Email body content is never transmitted.
 
-Phase 3 scope:
+Behaviour:
   - Classification of all inbox messages not in domain/cleanup groups
   - Confidence-based flagging: messages below threshold are UNCLASSIFIED
   - Results cached in DB to avoid re-classifying on re-runs within 24h
@@ -90,14 +90,14 @@ class TriageSummary:
                 + len(self.unclassified))
 
     def bucket(self, name: str) -> list[TriageResult]:
-        return getattr(self, name.lower().replace("_", ""), [])
+        return getattr(self, name.lower(), [])
 
 
 # ── Engine ────────────────────────────────────────────────────────────────────
 
 class TriageEngine:
     """
-    Classifies inbox messages using Gemini 1.5 Flash.
+    Classifies inbox messages using Gemini.
 
     Skips messages that:
       - Are already in a domain/cleanup group (passed as excluded_ids)
@@ -116,6 +116,10 @@ class TriageEngine:
         self._gemini = gemini_client
         self._db = db
         self._threshold = confidence_threshold
+
+    def close(self) -> None:
+        """Release the underlying Gemini HTTP client."""
+        self._gemini.__exit__(None, None, None)
 
     def classify(
         self,

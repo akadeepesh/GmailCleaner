@@ -1,6 +1,6 @@
 """
 GmailCleaner — Gemini API Client
-Thin wrapper around the Gemini 1.5 Flash REST API for email classification.
+Thin wrapper around the Gemini REST API for email classification.
 
 Design decisions:
   - Uses the generativelanguage.googleapis.com REST API directly.
@@ -11,11 +11,9 @@ Design decisions:
     as UNCLASSIFIED with confidence 0.0, rather than crashing the pipeline.
   - Implements exponential backoff with jitter on HTTP 429 / 503.
 
-Gemini 1.5 Flash free tier (as of 2025):
-  - 15 requests per minute
-  - 1,000,000 tokens per day
-  - 1,500 requests per day
-For a personal inbox scan of 500 emails, we use ~25 API calls (500 / 20 per batch).
+The model is configurable via triage.model in settings.yaml. Gemini Flash
+models are available on the Google AI Studio free tier; a personal inbox scan
+of 500 emails uses ~25 API calls (500 / 20 per batch).
 """
 
 import json
@@ -33,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-3.5-flash"
 # Messages per Gemini request. Higher = fewer API calls but larger prompts.
 BATCH_SIZE = 20
 # Retry config for 429 / 503 responses.
@@ -64,7 +62,7 @@ class GeminiClassification:
 
 class GeminiClient:
     """
-    Gemini 1.5 Flash REST client for batch email classification.
+    Gemini REST client for batch email classification.
 
     Usage:
         client = GeminiClient(api_key="...")

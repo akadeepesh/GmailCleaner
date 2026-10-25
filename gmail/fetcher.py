@@ -5,7 +5,7 @@ full metadata in batches.
 
 Design decisions:
   - Two-phase fetch: list message IDs first (cheap), then batch-fetch metadata.
-  - Only METADATA format is used (no body). Body is never fetched in Phase 1.
+  - Only METADATA format is used (no body). Email bodies are never fetched.
   - lookback_days translates to Gmail's `after:` query operator (most reliable filter).
   - Respects max_emails config to bound quota usage per run.
 """

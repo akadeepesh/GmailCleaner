@@ -13,8 +13,8 @@ Scoring factors:
   - has_unsubscribe        (suggests promotional, not transactional)
   - domain_age_days        (oldest email in group — older = more entrenched noise)
 
-Phase 2 scope: detection and candidate generation.
-Execution (batch delete) is handled by gmail/executor.py.
+This module only detects and ranks candidates. Confirmed groups are moved
+to Trash by gmail/executor.py.
 """
 
 import logging
@@ -93,14 +93,14 @@ class BulkCleanupEngine:
         Run bulk cleanup detection on a list of parsed messages.
 
         Args:
-            messages: List of GmailMessage objects from the scan phase.
+            messages: List of GmailMessage objects from the scan.
 
         Returns:
             Ranked list of CleanupGroup objects (highest score first).
         """
         blocked = self._blocked_senders | self._db.get_blocked_domains()
 
-        # ── Phase 1: domain groups ────────────────────────────────────────────
+        # ── Pass 1: domain groups ─────────────────────────────────────────────
         by_domain: dict[str, list[GmailMessage]] = defaultdict(list)
         for msg in messages:
             if msg.sender_domain and msg.sender_domain not in blocked:
@@ -118,7 +118,7 @@ class BulkCleanupEngine:
             groups.append(group)
             claimed_ids.update(group.message_ids)
 
-        # ── Phase 2: subject-prefix groups (unclaimed messages only) ──────────
+        # ── Pass 2: subject-prefix groups (unclaimed messages only) ───────────
         unclaimed = [m for m in messages if m.id not in claimed_ids
                      and m.sender_domain not in blocked]
         subject_groups = _build_subject_groups(unclaimed, self._min_group_size)
