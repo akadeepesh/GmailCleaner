@@ -2,7 +2,7 @@
 GmailCleaner — Reporter
 Produces two outputs at the end of each scan:
 
-  1. pending_actions.json — machine-readable, consumed by the execute phase.
+  1. pending_actions.json — machine-readable, consumed by `execute` and the dashboard.
   2. Rich console report  — human-readable summary printed to stdout.
 
 The reporter is purely a write-only layer. It does not call any Gmail APIs
@@ -11,6 +11,8 @@ or modify any state. All inputs are pre-computed by the engines.
 
 import json
 import logging
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -61,29 +63,87 @@ def generate_report(
         The report dict (same content as written to disk).
     """
     report = _build_report(run_id, emails_scanned, unsubscribe_candidates,
-                           cleanup_groups or [], triage_summary, dry_run)
-    _write_json(report, output_path)
-    _print_console_report(report, dry_run)
+                           cleanup_groups or [], triage_summary, dry_run, output_path)
+    save_pending_actions(report, output_path)
+    _print_console_report(report, dry_run, output_path)
     return report
 
 
-def load_pending_actions(path: str = PENDING_ACTIONS_PATH) -> Optional[dict]:
+def load_pending_actions(
+    path: str = PENDING_ACTIONS_PATH,
+    missing_ok: bool = False,
+) -> Optional[dict]:
     """
-    Load a previously generated pending_actions.json for the execute phase.
+    Load a previously generated pending_actions.json.
 
-    Returns None if the file does not exist or is malformed.
+    Returns None if the file does not exist or is malformed. With
+    missing_ok=True a missing file is not logged as an error.
     """
     file = Path(path)
     if not file.exists():
-        logger.error("No pending actions file found at %s. Run a scan first.", path)
+        if not missing_ok:
+            logger.error("No pending actions file found at %s. Run a scan first.", path)
         return None
     try:
-        data = json.loads(file.read_text())
-        logger.info("Loaded pending actions: run_id=%s", data.get("run_id"))
+        data = json.loads(file.read_text(encoding="utf-8"))
+        logger.debug("Loaded pending actions: run_id=%s", data.get("run_id"))
         return data
     except json.JSONDecodeError as exc:
-        logger.error("Failed to parse pending_actions.json: %s", exc)
+        logger.error("Failed to parse %s: %s", path, exc)
         return None
+
+
+def save_pending_actions(report: dict, path: str = PENDING_ACTIONS_PATH) -> None:
+    """
+    Atomically write the report to disk (temp file + rename), so the
+    dashboard, webhook and CLI never observe a half-written file.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".pending-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, target)
+    except Exception:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    logger.info("Pending actions written to %s", path)
+
+
+def merge_unsubscribe_candidates(
+    candidates: list[UnsubscribeCandidate],
+    path: str = PENDING_ACTIONS_PATH,
+) -> int:
+    """
+    Add newly detected unsubscribe candidates to an existing report.
+
+    Used by the real-time webhook so senders spotted between scheduled scans
+    show up on the dashboard right away. Domains already in the report are
+    left untouched. Does nothing if no report exists yet.
+
+    Returns:
+        Number of candidates added.
+    """
+    report = load_pending_actions(path, missing_ok=True)
+    if report is None:
+        return 0
+
+    existing = {item.get("domain") for item in report.get("unsubscribe", [])}
+    added = [
+        _serialize_unsubscribe(c)
+        for c in candidates
+        if not c.already_unsubscribed and c.domain not in existing
+    ]
+    if not added:
+        return 0
+
+    report.setdefault("unsubscribe", []).extend(added)
+    summary = report.setdefault("summary", {})
+    summary["unsubscribe_candidates"] = len(report["unsubscribe"])
+    save_pending_actions(report, path)
+    logger.info("Merged %d real-time unsubscribe candidate(s) into %s", len(added), path)
+    return len(added)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -97,24 +157,12 @@ def _build_report(
     cleanup_groups: list[CleanupGroup],
     triage_summary: Optional["TriageSummary"],
     dry_run: bool,
+    output_path: str = PENDING_ACTIONS_PATH,
 ) -> dict:
     now = datetime.now(timezone.utc).isoformat()
 
     unsubscribe_items = [
-        {
-            "domain": c.domain,
-            "display_name": c.display_name,
-            "sender_email": c.sender_email,
-            "email_count": c.email_count,
-            "most_recent_date": c.most_recent_date,
-            "representative_subject": c.representative_subject,
-            "method": c.method_label,
-            "http_url": c.unsubscribe.http_url,
-            "mailto": c.unsubscribe.mailto,
-            "supports_one_click": c.unsubscribe.supports_one_click,
-            "sample_message_ids": c.sample_message_ids,
-            "confirmed": False,
-        }
+        _serialize_unsubscribe(c)
         for c in unsubscribe_candidates
         if not c.already_unsubscribed
     ]
@@ -157,24 +205,35 @@ def _build_report(
         "delete_groups": delete_group_items,
         "triage": _build_triage_section(triage_summary),
         "_instructions": (
-            "To confirm actions: set 'confirmed': true on each item you want to execute, "
-            "then run: python main.py execute --session output/pending_actions.json"
+            "To confirm actions: set 'confirmed': true on each item you want to execute "
+            "(or use the dashboard's Pending page), then run: "
+            f"python main.py execute --session {output_path}"
         ),
     }
 
 
-def _write_json(report: dict, output_path: str) -> None:
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    logger.info("Pending actions written to %s", output_path)
+def _serialize_unsubscribe(c: UnsubscribeCandidate) -> dict:
+    return {
+        "domain": c.domain,
+        "display_name": c.display_name,
+        "sender_email": c.sender_email,
+        "email_count": c.email_count,
+        "most_recent_date": c.most_recent_date,
+        "representative_subject": c.representative_subject,
+        "method": c.method_label,
+        "http_url": c.unsubscribe.http_url,
+        "mailto": c.unsubscribe.mailto,
+        "supports_one_click": c.unsubscribe.supports_one_click,
+        "sample_message_ids": c.sample_message_ids,
+        "confirmed": False,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Console output (Rich)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _print_console_report(report: dict, dry_run: bool) -> None:
+def _print_console_report(report: dict, dry_run: bool, output_path: str = PENDING_ACTIONS_PATH) -> None:
     """Print a structured summary to the terminal using Rich."""
     console.print()
 
@@ -224,9 +283,9 @@ def _print_console_report(report: dict, dry_run: bool) -> None:
         console.print(
             Panel(
                 "[bold]Next steps[/bold]\n\n"
-                f"  1. Open [cyan]output/pending_actions.json[/cyan]\n"
+                f"  1. Open [cyan]{output_path}[/cyan] (or the dashboard's Pending page)\n"
                 f'  2. Set [cyan]"confirmed": true[/cyan] on each item you want to action\n'
-                f"  3. Run: [bold green]python main.py execute --session output/pending_actions.json[/bold green]",
+                f"  3. Run: [bold green]python main.py execute --session {output_path}[/bold green]",
                 border_style="dim",
                 padding=(1, 4),
             )
@@ -243,7 +302,7 @@ def _print_unsubscribe_table(items: list[dict]) -> None:
         padding=(0, 1),
         title="[bold]Unsubscribe Candidates[/bold]",
         title_style="bold white",
-        caption=f"{len(items)} sender(s) — review and confirm in pending_actions.json",
+        caption=f"{len(items)} sender(s) — review and confirm before executing",
         caption_style="dim",
     )
 
@@ -285,7 +344,7 @@ def _print_cleanup_table(items: list[dict]) -> None:
         padding=(0, 1),
         title="[bold]Bulk Cleanup Groups[/bold]",
         title_style="bold white",
-        caption=f"{len(items)} group(s) — review and confirm in pending_actions.json",
+        caption=f"{len(items)} group(s) — confirmed groups are moved to Trash",
         caption_style="dim",
     )
 

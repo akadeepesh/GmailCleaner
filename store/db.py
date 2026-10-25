@@ -9,6 +9,7 @@ Manages three concerns:
 """
 
 import logging
+import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -22,8 +23,12 @@ logger = logging.getLogger(__name__)
 # Schema
 # ──────────────────────────────────────────────────────────────────────────────
 
+# SQLite journal mode. WAL is fastest on local disk, but it needs shared memory,
+# which network filesystems (e.g. Cloud Storage FUSE on Cloud Run) don't provide.
+# Set SQLITE_JOURNAL_MODE=DELETE there.
+_JOURNAL_MODES = {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY"}
+
 SCHEMA = """
-PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS senders (
@@ -44,7 +49,7 @@ CREATE TABLE IF NOT EXISTS action_log (
     action_type     TEXT NOT NULL,   -- 'unsubscribe' | 'delete' | 'label' | 'skip'
     target          TEXT NOT NULL,   -- message_id or sender domain
     target_meta     TEXT,            -- JSON blob for extra context (subject, count, etc.)
-    status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'confirmed' | 'executed' | 'failed' | 'skipped'
+    status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'confirmed' | 'executed' | 'failed' | 'skipped' | 'superseded'
     created_at      TEXT NOT NULL,
     executed_at     TEXT,
     error           TEXT,
@@ -146,8 +151,9 @@ class Database:
     """
     Thread-safe SQLite wrapper for GmailCleaner state.
 
-    Uses WAL mode for better concurrent read performance and
-    context managers for safe transaction handling.
+    Uses WAL mode by default for better concurrent read performance
+    (override with SQLITE_JOURNAL_MODE) and context managers for safe
+    transaction handling.
     """
 
     def __init__(self, db_path: str) -> None:
@@ -161,12 +167,18 @@ class Database:
             self.db_path,
             detect_types=sqlite3.PARSE_DECLTYPES,
             check_same_thread=False,
+            timeout=30,
         )
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_schema(self) -> None:
+        mode = os.getenv("SQLITE_JOURNAL_MODE", "WAL").upper()
+        if mode not in _JOURNAL_MODES:
+            logger.warning("Unknown SQLITE_JOURNAL_MODE %r — falling back to WAL", mode)
+            mode = "WAL"
         with self._connect() as conn:
+            conn.execute(f"PRAGMA journal_mode={mode}")
             conn.executescript(SCHEMA)
 
     @contextmanager
@@ -241,6 +253,47 @@ class Database:
                 (domain, display_name, now, now, email_count),
             )
 
+    def increment_sender(
+        self,
+        domain: str,
+        display_name: Optional[str],
+        count: int = 1,
+    ) -> None:
+        """
+        Insert a new sender or add `count` to its email_count.
+        Used by the real-time webhook, which sees messages one notification at a time.
+        """
+        now = _utcnow()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO senders (domain, display_name, first_seen, last_seen, email_count)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(domain) DO UPDATE SET
+                    display_name = COALESCE(excluded.display_name, senders.display_name),
+                    last_seen    = excluded.last_seen,
+                    email_count  = senders.email_count + excluded.email_count
+                """,
+                (domain, display_name, now, now, count),
+            )
+
+    def list_senders(self) -> list[dict]:
+        """Return every known sender, noisiest first (used by exports)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM senders ORDER BY email_count DESC, domain ASC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_top_senders(self, limit: int = 10) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT domain, display_name, email_count FROM senders "
+                "ORDER BY email_count DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_sender(self, domain: str) -> Optional[SenderRecord]:
         with self._connect() as conn:
             row = conn.execute(
@@ -313,6 +366,39 @@ class Database:
             ).fetchall()
         return [_row_to_action(row) for row in rows]
 
+    def supersede_pending_actions(self, keep_run_id: str) -> int:
+        """
+        Mark pending actions from older runs as 'superseded'.
+
+        Each scan rewrites pending_actions.json from scratch, so pending rows
+        from previous runs can no longer be confirmed. Returns rows updated.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE action_log SET status = 'superseded' "
+                "WHERE status = 'pending' AND run_id != ?",
+                (keep_run_id,),
+            )
+            return cursor.rowcount
+
+    def list_actions(self, limit: Optional[int] = None) -> list[dict]:
+        """Return the action log, newest first (used by exports)."""
+        sql = "SELECT * FROM action_log ORDER BY created_at DESC, id DESC"
+        params: tuple = ()
+        if limit:
+            sql += " LIMIT ?"
+            params = (limit,)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_recent_runs(self, limit: int = 20) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_run_summary(self, run_id: str) -> Optional[dict]:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -369,6 +455,17 @@ class Database:
                 (cutoff,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_triage_counts(self) -> dict[str, int]:
+        """Return a count per triage bucket (all five buckets always present)."""
+        counts = {b: 0 for b in ("NEEDS_REPLY", "FYI", "PROMOTIONS", "JUNK", "UNCLASSIFIED")}
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT bucket, COUNT(*) AS n FROM triage_results GROUP BY bucket"
+            ).fetchall()
+        for row in rows:
+            counts[row["bucket"]] = row["n"]
+        return counts
 
     def get_triage_result(self, message_id: str) -> Optional[dict]:
         """Return the triage result for a single message, or None if not found."""

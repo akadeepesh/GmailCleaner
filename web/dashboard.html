@@ -47,11 +47,10 @@
             <span class="muted" style="font-size: 12px;">
                 Registered {{ watch_reg.registered_at[:10] }}
             </span>
-            <form method="POST" action="/api/watch/renew" style="display:inline;">
-                <button type="submit" class="btn btn-ghost" style="font-size: 12px; padding: 4px 10px;">
-                    ↻ Renew
-                </button>
-            </form>
+            <button type="button" class="btn btn-ghost" style="font-size: 12px; padding: 4px 10px;"
+                onclick="renewWatch(this)">
+                ↻ Renew
+            </button>
         </div>
     </div>
     <div class="mt-2" style="font-size: 12px; color: var(--muted);">
@@ -105,4 +104,19 @@
     <p class="muted mt-2" style="font-size: 12px;">Last run: {{ summary.last_run[:19] | replace('T', ' ') }} UTC</p>
     {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function renewWatch(btn) {
+    btn.disabled = true;
+    try {
+      await gcPost("/api/watch/renew");
+      location.reload();
+    } catch (err) {
+      alert("Watch renewal failed: " + err.message);
+      btn.disabled = false;
+    }
+  }
+</script>
 {% endblock %}

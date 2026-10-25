@@ -1,0 +1,19 @@
+# Never send secrets or local state to the Docker build context.
+.git
+.env
+config/credentials.json
+config/token.json
+config/tokens/
+data/
+output/pending_actions.json
+output/*/pending_actions.json
+exports/
+logs/
+**/__pycache__
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+htmlcov/
+.coverage
+tests/

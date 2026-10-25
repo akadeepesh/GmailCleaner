@@ -16,11 +16,15 @@ env/
 # GmailCleaner secrets — NEVER commit these
 config/credentials.json
 config/token.json
+config/tokens/
 .env
 
 # GmailCleaner runtime data
 data/
 output/pending_actions.json
+output/*/pending_actions.json
+.pending-*.json
+exports/
 
 # Logs
 *.log
@@ -37,7 +41,3 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
-
-# Docker
-*.dockerignore
-

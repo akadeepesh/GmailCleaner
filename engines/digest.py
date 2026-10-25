@@ -10,13 +10,15 @@ The digest contains:
   - PROMOTIONS count + top unsubscribe candidates
   - JUNK count + top cleanup groups
   - UNCLASSIFIED items flagged for review
-  - CLI command to execute confirmed actions
+  - A link to the dashboard (if DASHBOARD_URL is set) and the CLI command
+    to execute confirmed actions
 
 Sending to self (same Gmail account) requires only the gmail.send scope —
 no external mail infrastructure needed.
 """
 
 import base64
+import html as html_lib
 import logging
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
@@ -49,9 +51,17 @@ class DigestEngine:
                     unsubscribe_candidates, cleanup_groups)
     """
 
-    def __init__(self, client: GmailClient, recipient: str) -> None:
+    def __init__(
+        self,
+        client: GmailClient,
+        recipient: str,
+        dashboard_url: Optional[str] = None,
+        session_path: str = "output/pending_actions.json",
+    ) -> None:
         self._client = client
         self._recipient = recipient
+        self._dashboard_url = dashboard_url
+        self._session_path = session_path
 
     def send(
         self,
@@ -85,6 +95,8 @@ class DigestEngine:
             triage=triage,
             unsubscribe_candidates=unsubscribe_candidates,
             cleanup_groups=cleanup_groups,
+            dashboard_url=self._dashboard_url,
+            session_path=self._session_path,
         )
 
         try:
@@ -122,6 +134,8 @@ def _build_html(
     triage: TriageSummary,
     unsubscribe_candidates: list[UnsubscribeCandidate],
     cleanup_groups: list[CleanupGroup],
+    dashboard_url: Optional[str] = None,
+    session_path: str = "output/pending_actions.json",
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -152,7 +166,7 @@ def _build_html(
 
     # ── Action footer ─────────────────────────────────────────────────────────
     has_actions = bool(unsubscribe_candidates or cleanup_groups)
-    sections.append(_footer(run_id, has_actions))
+    sections.append(_footer(run_id, has_actions, dashboard_url, session_path))
 
     return _wrap_html("\n".join(sections))
 
@@ -300,18 +314,32 @@ def _section_unclassified(items: list[TriageResult]) -> str:
     )
 
 
-def _footer(run_id: str, has_actions: bool) -> str:
+def _footer(
+    run_id: str,
+    has_actions: bool,
+    dashboard_url: Optional[str] = None,
+    session_path: str = "output/pending_actions.json",
+) -> str:
     action_block = ""
     if has_actions:
+        path = _esc(session_path)
+        dashboard_link = ""
+        if dashboard_url:
+            url = html_lib.escape(dashboard_url.rstrip("/") + "/pending", quote=True)
+            dashboard_link = f"""
+  <p style="margin:0 0 10px;">
+    <a href="{url}" style="display:inline-block;background:#2e7d32;color:#fff;text-decoration:none;padding:8px 16px;border-radius:5px;font-size:13px;font-weight:600;">Review in dashboard →</a>
+  </p>
+  <p style="margin:0;font-size:12px;color:#777;">Or from the command line:</p>"""
         action_block = f"""
 <div style="background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;padding:14px 18px;margin:16px 0;">
-  <p style="margin:0 0 6px;font-weight:600;font-size:14px;color:#2e7d32;">Actions pending your confirmation</p>
+  <p style="margin:0 0 6px;font-weight:600;font-size:14px;color:#2e7d32;">Actions pending your confirmation</p>{dashboard_link}
   <p style="margin:0;font-size:13px;color:#555;">
-    Open <code style="background:#f1f1f1;padding:2px 5px;border-radius:3px;">output/pending_actions.json</code>,
+    Open <code style="background:#f1f1f1;padding:2px 5px;border-radius:3px;">{path}</code>,
     set <code style="background:#f1f1f1;padding:2px 5px;border-radius:3px;">"confirmed": true</code>
     on the items you want to process, then run:
   </p>
-  <pre style="background:#1a1a2e;color:#a5d6a7;padding:12px 16px;border-radius:5px;margin:10px 0 0;font-size:13px;overflow-x:auto;">python main.py execute --session output/pending_actions.json</pre>
+  <pre style="background:#1a1a2e;color:#a5d6a7;padding:12px 16px;border-radius:5px;margin:10px 0 0;font-size:13px;overflow-x:auto;">python main.py execute --session {path}</pre>
 </div>
 """
 
@@ -320,7 +348,7 @@ def _footer(run_id: str, has_actions: bool) -> str:
 <div style="margin-top:24px;padding-top:16px;border-top:1px solid #eee;text-align:center;">
   <p style="color:#bbb;font-size:12px;margin:0;">
     GmailCleaner &nbsp;·&nbsp; Run <code>{run_id}</code> &nbsp;·&nbsp;
-    <a href="https://github.com/yourusername/GmailCleaner" style="color:#bbb;">GitHub</a>
+    <a href="https://github.com/akadeepesh/GmailCleaner" style="color:#bbb;">GitHub</a>
   </p>
 </div>
 """

@@ -1,10 +1,9 @@
 """
 GmailCleaner — Unsubscribe Engine
-Detects unsubscribe candidates from parsed messages and (in execute phase)
-performs the actual unsubscription via HTTP or mailto.
+Detects unsubscribe candidates from parsed messages.
 
-Phase 1 scope: detection and candidate generation only.
-Execution (HTTP POST / mailto send) is called from gmail/executor.py in Phase 2.
+This module only detects candidates. Confirmed unsubscribes (HTTP POST /
+GET / mailto) are performed by gmail/executor.py.
 
 RFC references:
   - RFC 2369: List-Unsubscribe header (HTTP and mailto mechanisms)
@@ -87,7 +86,7 @@ class UnsubscribeEngine:
         Run unsubscribe detection on a list of parsed messages.
 
         Args:
-            messages: List of GmailMessage objects from the scan phase.
+            messages: List of GmailMessage objects from the scan.
 
         Returns:
             Ranked list of UnsubscribeCandidate objects (noisiest first).

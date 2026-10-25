@@ -182,7 +182,7 @@ class TestWebhookHandler:
         msg.sender_domain = "x.com"
         msg.sender_name = "X"
 
-        handler, client, db, unsub = _make_handler(last_history_id="900", fetch_messages=[{}])
+        handler, client, db, unsub = _make_handler(last_history_id="900", fetch_messages=[{"id": "m1", "threadId": "t1"}])
         with patch("pubsub.webhook.parse_messages", return_value=[msg]):
             handler.handle(self._notif("1001"))
 
@@ -193,7 +193,7 @@ class TestWebhookHandler:
         msg.sender_domain = "x.com"
         msg.sender_name = "X"
 
-        handler, client, db, unsub = _make_handler(last_history_id="900", fetch_messages=[{}])
+        handler, client, db, unsub = _make_handler(last_history_id="900", fetch_messages=[{"id": "m1", "threadId": "t1"}])
         mock_triage = handler._triage_engine
         with patch("pubsub.webhook.parse_messages", return_value=[msg]):
             handler.handle(self._notif("1001"))
@@ -208,7 +208,7 @@ class TestWebhookHandler:
         mock_client = MagicMock()
         mock_db = MagicMock()
         mock_db.get_last_history_id.return_value = "900"
-        mock_client.list_history.return_value = [{}]
+        mock_client.list_history.return_value = [{"id": "m1", "threadId": "t1"}]
         mock_unsub = MagicMock()
         mock_unsub.get_new_candidates.return_value = []
 
@@ -230,7 +230,7 @@ class TestWebhookHandler:
         msg.sender_domain = "x.com"
         msg.sender_name = "X"
 
-        handler, client, db, unsub = _make_handler(last_history_id="900", fetch_messages=[{}])
+        handler, client, db, unsub = _make_handler(last_history_id="900", fetch_messages=[{"id": "m1", "threadId": "t1"}])
         with patch("pubsub.webhook.parse_messages", return_value=[msg]):
             handler.handle(self._notif("1001"))
 
@@ -248,12 +248,63 @@ class TestWebhookHandler:
         # Should return no_new_messages gracefully, not crash
         assert result["status"] == "no_new_messages"
 
+    def test_metadata_fetched_for_history_ids(self):
+        """history.list returns IDs only — headers must be fetched before parsing."""
+        msg = MagicMock()
+        msg.sender_domain = "x.com"
+        msg.sender_name = "X"
+
+        handler, client, db, unsub = _make_handler(
+            last_history_id="900",
+            fetch_messages=[{"id": "m1"}, {"id": "m2"}, {"id": "m1"}],
+        )
+        with patch("pubsub.webhook.parse_messages", return_value=[msg]):
+            handler.handle(self._notif("1001"))
+
+        args, kwargs = client.batch_get_messages.call_args
+        assert args[0] == ["m1", "m2"]  # de-duplicated, order preserved
+        assert kwargs["format"] == "metadata"
+
+    def test_sender_counts_incremented_not_overwritten(self):
+        msgs = []
+        for _ in range(3):
+            m = MagicMock()
+            m.sender_domain = "x.com"
+            m.sender_name = "X"
+            msgs.append(m)
+
+        handler, client, db, unsub = _make_handler(
+            last_history_id="900", fetch_messages=[{"id": "m1"}]
+        )
+        with patch("pubsub.webhook.parse_messages", return_value=msgs):
+            handler.handle(self._notif("1001"))
+
+        db.increment_sender.assert_called_once_with(domain="x.com", display_name="X", count=3)
+        db.upsert_sender.assert_not_called()
+
+    def test_candidates_merged_into_pending_report(self):
+        msg = MagicMock()
+        msg.sender_domain = "x.com"
+        msg.sender_name = "X"
+
+        handler, client, db, unsub = _make_handler(
+            last_history_id="900", fetch_messages=[{"id": "m1"}]
+        )
+        handler._pending_actions_path = "some/path.json"
+        candidate = MagicMock()
+        unsub.get_new_candidates.return_value = [candidate]
+
+        with patch("pubsub.webhook.parse_messages", return_value=[msg]),              patch("pubsub.webhook.merge_unsubscribe_candidates") as mock_merge:
+            handler.handle(self._notif("1001"))
+
+        mock_merge.assert_called_once_with([candidate], "some/path.json")
+
     def test_history_id_advanced_after_processing(self):
         msg = MagicMock()
         msg.sender_domain = "x.com"
         msg.sender_name = "X"
 
-        handler, client, db, unsub = _make_handler(last_history_id="900", fetch_messages=[{}])
+        handler, client, db, unsub = _make_handler(last_history_id="900", fetch_messages=[{"id": "m1", "threadId": "t1"}])
         with patch("pubsub.webhook.parse_messages", return_value=[msg]):
             handler.handle(self._notif("2500"))
 

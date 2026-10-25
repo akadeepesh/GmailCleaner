@@ -7,22 +7,25 @@ A lightweight Flask application serving two purposes:
 
 Routes:
   GET  /                         — Dashboard overview
-  GET  /pending                  — Review pending actions (unsubscribe + delete groups)
-  GET  /stats                    — Inbox activity chart (7-day)
+  GET  /pending                  — Review, confirm and execute pending actions
+  GET  /stats                    — Inbox activity chart (14-day)
   GET  /history                  — Recent run history
+  GET  /export/<dataset>.csv     — Inbox health CSV export (summary|senders|actions|runs)
   GET  /health                   — Health check (Cloud Run liveness probe)
   POST /webhook/pubsub           — Pub/Sub push endpoint
-  POST /api/confirm              — Confirm or reject a pending action (HTMX-friendly)
-  POST /api/watch/renew          — Manually trigger watch renewal
+  POST /api/confirm              — Confirm or reject a pending action
+  POST /api/execute              — Execute all confirmed actions
+  POST /api/watch/renew          — Renew the Gmail watch (called daily by Cloud Scheduler)
 
 Security:
-  - Dashboard routes require a secret token in the Authorization header or
-    as a ?token= query param (set via DASHBOARD_SECRET env var).
-  - Webhook route verifies the Pub/Sub OIDC JWT before processing.
+  - Dashboard routes require the DASHBOARD_SECRET token, supplied as
+    `Authorization: Bearer <token>`, a `?token=` query param (which then sets
+    an HttpOnly, SameSite=Strict cookie so navigation keeps working), or that cookie.
+  - The webhook verifies the Pub/Sub OIDC JWT when PUBSUB_AUDIENCE is set.
   - All user-supplied data in templates is auto-escaped by Jinja2.
 """
 
-import json
+import hmac
 import logging
 import os
 from datetime import datetime, timezone
@@ -33,22 +36,29 @@ from typing import Optional
 from flask import (
     Flask,
     Response,
+    abort,
     jsonify,
+    make_response,
     render_template,
     request,
-    abort,
 )
 
 from auth.oauth import get_credentials
-from engines.unsubscribe import UnsubscribeEngine
+from core.settings import load_config, resolve_config
 from engines.triage import TriageEngine
+from engines.unsubscribe import UnsubscribeEngine
 from gmail.client import GmailClient
-from output.reporter import load_pending_actions
-from pubsub.webhook import PubSubNotification, WebhookHandler, verify_pubsub_token
+from gmail.executor import GmailExecutor, confirmed_items, execute_report
+from output.exporter import DATASETS, to_csv
+from output.reporter import load_pending_actions, save_pending_actions
 from pubsub.watcher import WatchManager
+from pubsub.webhook import PubSubNotification, WebhookHandler, verify_pubsub_token
 from store.db import Database
+from version import __version__
 
 logger = logging.getLogger(__name__)
+
+_TOKEN_COOKIE = "gc_token"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -60,7 +70,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
     Flask application factory.
 
     Args:
-        config: Optional config dict to override environment-based settings.
+        config: Optional raw config dict (as parsed from settings.yaml). When
+                omitted, config/settings.yaml is loaded. Environment overrides
+                are applied in both cases.
 
     Returns:
         Configured Flask app ready to serve.
@@ -68,18 +80,27 @@ def create_app(config: Optional[dict] = None) -> Flask:
     app = Flask(
         __name__,
         template_folder=str(Path(__file__).parent),
-        static_folder="static",
+        static_folder=None,
     )
 
     # ── Config ────────────────────────────────────────────────────────────────
-    cfg = config or _load_config()
+    cfg = resolve_config(config) if config is not None else load_config()
     app.config["GMAILCLEANER"] = cfg
-    app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", os.urandom(32))
+    app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY") or os.urandom(32)
+
+    if not os.getenv("DASHBOARD_SECRET"):
+        logger.warning(
+            "DASHBOARD_SECRET is not set — dashboard authentication is DISABLED. "
+            "Only run like this on a trusted local machine."
+        )
 
     # ── Services ──────────────────────────────────────────────────────────────
-    db_path = cfg.get("database", {}).get("path", "data/gmailcleaner.db")
-    db = Database(db_path)
+    db = Database(cfg["database"]["path"])
     app.config["DB"] = db
+
+    @app.context_processor
+    def _inject_globals():
+        return {"version": __version__, "account": cfg.get("account")}
 
     # ── Routes ───────────────────────────────────────────────────────────────
     _register_routes(app, db, cfg)
@@ -97,7 +118,8 @@ def _require_token(f):
 
     Accepts the token as:
       - Authorization: Bearer <token>
-      - ?token=<token> query parameter
+      - ?token=<token> query parameter (also sets the session cookie)
+      - the gc_token cookie
 
     If DASHBOARD_SECRET is not set, authentication is disabled
     (suitable for local development only).
@@ -108,14 +130,31 @@ def _require_token(f):
         if not secret:
             return f(*args, **kwargs)  # Auth disabled
 
-        token = (
-            request.headers.get("Authorization", "").replace("Bearer ", "")
-            or request.args.get("token", "")
-        )
-        if token != secret:
+        auth_header = request.headers.get("Authorization", "")
+        header_token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        query_token = request.args.get("token", "")
+        cookie_token = request.cookies.get(_TOKEN_COOKIE, "")
+
+        if not any(_safe_equals(t, secret) for t in (header_token, query_token, cookie_token)):
             abort(401)
-        return f(*args, **kwargs)
+
+        response = make_response(f(*args, **kwargs))
+        if query_token and _safe_equals(query_token, secret):
+            response.set_cookie(
+                _TOKEN_COOKIE,
+                secret,
+                httponly=True,
+                samesite="Strict",
+                secure=request.is_secure
+                or request.headers.get("X-Forwarded-Proto", "") == "https",
+                max_age=30 * 24 * 3600,
+            )
+        return response
     return decorated
+
+
+def _safe_equals(candidate: str, secret: str) -> bool:
+    return bool(candidate) and hmac.compare_digest(candidate.encode(), secret.encode())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -124,26 +163,27 @@ def _require_token(f):
 
 def _register_routes(app: Flask, db: Database, cfg: dict) -> None:
 
+    def pending_path() -> str:
+        return cfg["output"]["pending_actions_path"]
+
     # ── Health check ──────────────────────────────────────────────────────────
 
     @app.get("/health")
     def health():
         """Cloud Run liveness probe — must return 200 quickly."""
-        return jsonify({"status": "ok", "service": "gmailcleaner-dashboard"})
+        return jsonify({"status": "ok", "service": "gmailcleaner-dashboard", "version": __version__})
 
     # ── Dashboard ─────────────────────────────────────────────────────────────
 
     @app.get("/")
     @_require_token
     def dashboard():
-        summary = db.get_dashboard_summary()
-        stats = db.get_inbox_stats(days=7)
-        watch_reg = db.get_watch_registration()
         return render_template(
             "dashboard.html",
-            summary=summary,
-            stats=stats,
-            watch_reg=watch_reg,
+            active="dashboard",
+            summary=db.get_dashboard_summary(),
+            stats=db.get_inbox_stats(days=7),
+            watch_reg=db.get_watch_registration(),
             now=_now_str(),
         )
 
@@ -152,12 +192,16 @@ def _register_routes(app: Flask, db: Database, cfg: dict) -> None:
     @app.get("/pending")
     @_require_token
     def pending():
-        report = load_pending_actions()
+        report = load_pending_actions(pending_path(), missing_ok=True)
         if not report:
             report = {"unsubscribe": [], "delete_groups": [], "triage": {}, "summary": {}}
+        unsub_ready, delete_ready = confirmed_items(report)
         return render_template(
             "pending.html",
+            active="pending",
             report=report,
+            ready_count=len(unsub_ready) + len(delete_ready),
+            session_path=pending_path(),
             now=_now_str(),
         )
 
@@ -166,14 +210,16 @@ def _register_routes(app: Flask, db: Database, cfg: dict) -> None:
     @app.get("/stats")
     @_require_token
     def stats():
-        inbox_stats = db.get_inbox_stats(days=14)
-        triage_counts = _get_triage_counts(db)
-        sender_stats = _get_sender_stats(db)
         return render_template(
             "stats.html",
-            inbox_stats=inbox_stats,
-            triage_counts=triage_counts,
-            sender_stats=sender_stats,
+            active="stats",
+            inbox_stats=db.get_inbox_stats(days=14),
+            triage_counts=db.get_triage_counts(),
+            sender_stats={
+                "top_senders": db.get_top_senders(limit=10),
+                "total_unsubscribed": db.get_dashboard_summary()["unsubscribed"],
+            },
+            datasets=DATASETS,
             now=_now_str(),
         )
 
@@ -182,11 +228,27 @@ def _register_routes(app: Flask, db: Database, cfg: dict) -> None:
     @app.get("/history")
     @_require_token
     def history():
-        runs = _get_recent_runs(db, limit=20)
         return render_template(
             "history.html",
-            runs=runs,
+            active="history",
+            runs=db.get_recent_runs(limit=20),
             now=_now_str(),
+        )
+
+    # ── CSV export ────────────────────────────────────────────────────────────
+
+    @app.get("/export/<dataset>.csv")
+    @_require_token
+    def export_dataset(dataset: str):
+        if dataset not in DATASETS:
+            abort(404)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+        return Response(
+            to_csv(db, dataset),
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="gmailcleaner-{dataset}-{stamp}.csv"'
+            },
         )
 
     # ── API: confirm / reject action ──────────────────────────────────────────
@@ -195,65 +257,84 @@ def _register_routes(app: Flask, db: Database, cfg: dict) -> None:
     @_require_token
     def api_confirm():
         """
-        Toggle confirmed=true/false on a pending action in pending_actions.json.
+        Set confirmed=true/false on a pending action in pending_actions.json.
 
         Request body (JSON):
           { "action_type": "unsubscribe"|"delete", "target": "<domain or group_id>", "confirmed": true|false }
-
-        Returns the updated action item so HTMX can swap it in-place.
         """
         data = request.get_json(silent=True) or {}
         action_type = data.get("action_type")
         target = data.get("target")
         confirmed = bool(data.get("confirmed", True))
 
-        if not action_type or not target:
-            return jsonify({"error": "action_type and target are required"}), 400
+        if action_type not in ("unsubscribe", "delete") or not target:
+            return jsonify({"error": "action_type (unsubscribe|delete) and target are required"}), 400
 
-        report = load_pending_actions()
+        report = load_pending_actions(pending_path(), missing_ok=True)
         if not report:
             return jsonify({"error": "No pending actions found"}), 404
 
-        updated = False
         section = "unsubscribe" if action_type == "unsubscribe" else "delete_groups"
         id_field = "domain" if action_type == "unsubscribe" else "group_id"
 
-        for item in report.get(section, []):
-            if item.get(id_field) == target:
-                item["confirmed"] = confirmed
-                updated = True
-                break
-
-        if not updated:
+        item = next((i for i in report.get(section, []) if i.get(id_field) == target), None)
+        if item is None:
             return jsonify({"error": f"Target {target!r} not found"}), 404
+        if item.get("executed_at"):
+            return jsonify({"error": f"Target {target!r} was already executed"}), 409
 
-        # Write the updated report back to disk.
-        from pathlib import Path
-        import json
-        Path("output/pending_actions.json").write_text(
-            json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-
+        item["confirmed"] = confirmed
+        save_pending_actions(report, pending_path())
         return jsonify({"status": "ok", "target": target, "confirmed": confirmed})
+
+    # ── API: execute confirmed actions ────────────────────────────────────────
+
+    @app.post("/api/execute")
+    @_require_token
+    def api_execute():
+        """Execute every confirmed, not-yet-executed action in the pending report."""
+        report = load_pending_actions(pending_path(), missing_ok=True)
+        if not report:
+            return jsonify({"error": "No pending actions found"}), 404
+
+        unsub_items, delete_items = confirmed_items(report)
+        if not unsub_items and not delete_items:
+            return jsonify({"error": "No confirmed actions to execute"}), 400
+
+        try:
+            client = GmailClient(_credentials(cfg))
+            with GmailExecutor(client, db) as executor:
+                summary = execute_report(executor, db, report)
+        except Exception as exc:
+            logger.error("Execute failed: %s", exc, exc_info=True)
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            # Persist executed_at stamps even if execution stopped part-way.
+            save_pending_actions(report, pending_path())
+
+        return jsonify({
+            "status": "executed",
+            "unsubscribed": summary.total_unsubscribed,
+            "trashed": summary.total_deleted,
+            "failed": summary.total_failed,
+        })
 
     # ── API: renew watch ──────────────────────────────────────────────────────
 
     @app.post("/api/watch/renew")
     @_require_token
     def api_watch_renew():
-        """Manually trigger a Gmail watch renewal."""
+        """Renew the Gmail watch (Gmail expires watches after 7 days)."""
         topic = cfg.get("pubsub", {}).get("topic_name", "")
         if not topic:
             return jsonify({"error": "pubsub.topic_name not configured"}), 400
 
         try:
-            creds = get_credentials(
-                os.getenv("GOOGLE_CREDENTIALS_PATH", "config/credentials.json"),
-                os.getenv("GOOGLE_TOKEN_PATH", "config/token.json"),
-            )
-            client = GmailClient(creds)
+            client = GmailClient(_credentials(cfg))
             manager = WatchManager(client, db, topic)
             reg = manager.register()
+            if not db.get_last_history_id():
+                db.save_history_id(reg.history_id)
             return jsonify({
                 "status": "renewed",
                 "history_id": reg.history_id,
@@ -271,16 +352,20 @@ def _register_routes(app: Flask, db: Database, cfg: dict) -> None:
         Receive Gmail Pub/Sub push notifications.
 
         Returns 200 to acknowledge (prevents Pub/Sub retry).
-        Returns 400 for malformed payloads (also acknowledges — we can't fix them).
+        Returns 400 for empty / non-JSON payloads.
         Returns 401 for unverified JWT (Pub/Sub will retry).
         """
-        # Verify the Google-signed OIDC JWT.
-        audience = os.getenv("CLOUD_RUN_SERVICE_URL", "")
-        if audience and not verify_pubsub_token(
-            request.headers.get("Authorization"), audience
-        ):
-            logger.warning("Webhook: JWT verification failed — rejecting")
-            return Response("Unauthorized", status=401)
+        audience = os.getenv("PUBSUB_AUDIENCE") or os.getenv("CLOUD_RUN_SERVICE_URL", "")
+        if audience:
+            if not verify_pubsub_token(
+                request.headers.get("Authorization"),
+                audience,
+                expected_email=os.getenv("PUBSUB_SERVICE_ACCOUNT") or None,
+            ):
+                logger.warning("Webhook: JWT verification failed — rejecting")
+                return Response("Unauthorized", status=401)
+        elif os.getenv("K_SERVICE"):
+            logger.warning("Webhook: PUBSUB_AUDIENCE is not set — push requests are NOT verified")
 
         body = request.get_json(silent=True)
         if not body:
@@ -294,13 +379,14 @@ def _register_routes(app: Flask, db: Database, cfg: dict) -> None:
             # Return 200 to acknowledge (Pub/Sub won't retry malformed messages usefully)
             return jsonify({"status": "ignored", "reason": str(exc)})
 
+        triage_engine = None
         try:
-            creds = get_credentials(
-                os.getenv("GOOGLE_CREDENTIALS_PATH", "config/credentials.json"),
-                os.getenv("GOOGLE_TOKEN_PATH", "config/token.json"),
+            client = GmailClient(_credentials(cfg))
+            unsub_engine = UnsubscribeEngine(
+                db=db,
+                min_email_count=1,
+                blocked_senders=cfg.get("blocked_senders", []),
             )
-            client = GmailClient(creds)
-            unsub_engine = UnsubscribeEngine(db=db, min_email_count=1)
             triage_engine = _build_triage_engine(db, cfg)
 
             handler = WebhookHandler(
@@ -308,83 +394,50 @@ def _register_routes(app: Flask, db: Database, cfg: dict) -> None:
                 db=db,
                 unsub_engine=unsub_engine,
                 triage_engine=triage_engine,
+                pending_actions_path=pending_path(),
             )
-            result = handler.handle(notification)
-            return jsonify(result)
+            return jsonify(handler.handle(notification))
 
         except Exception as exc:
             logger.error("Webhook processing error: %s", exc, exc_info=True)
             # Return 200 so Pub/Sub doesn't retry endlessly on persistent errors.
             return jsonify({"status": "error", "reason": str(exc)})
+        finally:
+            if triage_engine is not None:
+                triage_engine.close()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _load_config() -> dict:
-    import yaml
-    path = Path("config/settings.yaml")
-    if path.exists():
-        with open(path) as f:
-            return yaml.safe_load(f) or {}
-    return {}
+def _credentials(cfg: dict):
+    auth_cfg = cfg.get("auth", {})
+    return get_credentials(
+        auth_cfg.get("credentials_path", "config/credentials.json"),
+        auth_cfg.get("token_path", "config/token.json"),
+    )
 
 
 def _now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def _get_triage_counts(db: Database) -> dict:
-    """Aggregate triage bucket counts from the DB."""
-    buckets = ["NEEDS_REPLY", "FYI", "PROMOTIONS", "JUNK", "UNCLASSIFIED"]
-    counts = {}
-    with db._connect() as conn:
-        for bucket in buckets:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM triage_results WHERE bucket = ?", (bucket,)
-            ).fetchone()
-            counts[bucket] = row[0]
-    return counts
-
-
-def _get_sender_stats(db: Database) -> dict:
-    """Return top senders and unsubscribe stats."""
-    with db._connect() as conn:
-        top = conn.execute(
-            "SELECT domain, display_name, email_count FROM senders ORDER BY email_count DESC LIMIT 10"
-        ).fetchall()
-        total_unsub = conn.execute(
-            "SELECT COUNT(*) FROM senders WHERE unsubscribed_at IS NOT NULL"
-        ).fetchone()[0]
-    return {
-        "top_senders": [dict(r) for r in top],
-        "total_unsubscribed": total_unsub,
-    }
-
-
-def _get_recent_runs(db: Database, limit: int = 20) -> list[dict]:
-    with db._connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", (limit,)
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def _build_triage_engine(db: Database, cfg: dict) -> Optional[TriageEngine]:
     """Build a TriageEngine if triage is enabled and GEMINI_API_KEY is set."""
-    if not cfg.get("triage", {}).get("enabled", False):
+    triage_cfg = cfg.get("triage", {})
+    if not triage_cfg.get("enabled", False):
         return None
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
         return None
     try:
-        from ai.gemini import GeminiClient
-        gemini = GeminiClient(api_key=api_key, model=cfg["triage"].get("model", "gemini-1.5-flash"))
+        from ai.gemini import GEMINI_MODEL, GeminiClient
+        gemini = GeminiClient(api_key=api_key, model=triage_cfg.get("model", GEMINI_MODEL))
         return TriageEngine(
             gemini_client=gemini,
             db=db,
-            confidence_threshold=cfg["triage"].get("confidence_threshold", 0.75),
+            confidence_threshold=triage_cfg.get("confidence_threshold", 0.75),
         )
     except Exception as exc:
         logger.warning("Could not build triage engine for webhook: %s", exc)
@@ -396,6 +449,9 @@ def _build_triage_engine(db: Database, cfg: dict) -> Optional[TriageEngine]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv  # type: ignore
+
+    load_dotenv()
     logging.basicConfig(level=logging.INFO)
     app = create_app()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)), debug=False)
+    app.run(host="127.0.0.1", port=int(os.getenv("PORT", 8080)), debug=False)

@@ -120,3 +120,64 @@ class TestActionLog:
         db2 = Database(path)  # Should not raise
         db2.upsert_sender("x.com", "X", 1)
         assert db2.get_sender("x.com") is not None
+
+class TestSenderIncrement:
+    def test_increment_adds_to_count(self, db: Database):
+        db.upsert_sender("example.com", "Example", 10)
+        db.increment_sender("example.com", None, 3)
+        sender = db.get_sender("example.com")
+        assert sender.email_count == 13
+        assert sender.display_name == "Example"
+
+    def test_increment_inserts_new(self, db: Database):
+        db.increment_sender("new.com", "New", 2)
+        assert db.get_sender("new.com").email_count == 2
+
+    def test_list_and_top_senders_ordered(self, db: Database):
+        db.upsert_sender("a.com", "A", 1)
+        db.upsert_sender("b.com", "B", 9)
+        assert [s["domain"] for s in db.list_senders()] == ["b.com", "a.com"]
+        assert db.get_top_senders(limit=1)[0]["domain"] == "b.com"
+
+
+class TestActionLifecycle:
+    def test_supersede_only_older_pending(self, db: Database):
+        old = db.log_action("run-old", "delete", "g1")
+        done = db.log_action("run-old", "delete", "g2")
+        db.update_action_status(done, "executed")
+        new = db.log_action("run-new", "delete", "g3")
+
+        assert db.supersede_pending_actions(keep_run_id="run-new") == 1
+        statuses = {a["id"]: a["status"] for a in db.list_actions()}
+        assert statuses == {old: "superseded", done: "executed", new: "pending"}
+        assert db.get_dashboard_summary()["pending_actions"] == 1
+
+    def test_list_actions_limit(self, db: Database):
+        for i in range(3):
+            db.log_action("r", "delete", f"g{i}")
+        assert len(db.list_actions(limit=2)) == 2
+
+
+class TestTriageCounts:
+    def test_all_buckets_present(self, db: Database):
+        db.save_triage_results([
+            {"message_id": "m1", "bucket": "JUNK", "confidence": 0.9},
+            {"message_id": "m2", "bucket": "JUNK", "confidence": 0.9},
+            {"message_id": "m3", "bucket": "FYI", "confidence": 0.9},
+        ])
+        counts = db.get_triage_counts()
+        assert counts == {"NEEDS_REPLY": 0, "FYI": 1, "PROMOTIONS": 0, "JUNK": 2, "UNCLASSIFIED": 0}
+
+
+class TestJournalMode:
+    def test_journal_mode_configurable(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SQLITE_JOURNAL_MODE", "DELETE")
+        db = Database(str(tmp_path / "j.db"))
+        with db._connect() as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0].upper() == "DELETE"
+
+    def test_unknown_mode_falls_back_to_wal(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SQLITE_JOURNAL_MODE", "BOGUS; DROP TABLE runs")
+        db = Database(str(tmp_path / "j.db"))
+        with db._connect() as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0].upper() == "WAL"

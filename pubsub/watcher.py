@@ -6,7 +6,7 @@ How it works:
   - gmail.users.watch() tells Gmail to publish a Pub/Sub message to your topic
     whenever your inbox changes (new message, label change, etc.).
   - The watch registration expires after ~7 days, so it must be renewed regularly.
-    Cloud Scheduler calls the /renew-watch endpoint daily to keep it alive.
+    Cloud Scheduler calls POST /api/watch/renew daily to keep it alive.
   - Each watch call returns a historyId — the baseline for incremental history fetches.
     We store this in the DB so the webhook handler knows where to start from.
 
@@ -94,7 +94,7 @@ class WatchManager:
         try:
             response = self._client.watch_inbox(
                 topic_name=self._topic_name,
-                label_ids=self._label_IDS if hasattr(self, '_label_IDS') else self._LABEL_IDS,
+                label_ids=self._LABEL_IDS,
             )
         except HttpError as exc:
             raise RuntimeError(
@@ -134,7 +134,12 @@ class WatchManager:
                     "Watch is active (expires in %.0fh). No renewal needed.",
                     remaining_s / 3600,
                 )
-                return WatchRegistration(**existing)
+                return WatchRegistration(
+                    history_id=existing["history_id"],
+                    expiration_ms=existing["expiration_ms"],
+                    topic_name=existing["topic_name"],
+                    registered_at=existing["registered_at"],
+                )
 
             logger.info(
                 "Watch expires in %.0fh — renewing.", remaining_s / 3600

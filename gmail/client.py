@@ -235,29 +235,33 @@ class GmailClient:
 
     # ── Message mutation ──────────────────────────────────────────────────────
 
-    def batch_delete(self, message_ids: list[str]) -> None:
+    def batch_trash(self, message_ids: list[str]) -> None:
         """
-        Permanently delete messages by ID using batchDelete.
-        Supports up to 1,000 IDs per call.
+        Move messages to Trash using batchModify. Supports up to 1,000 IDs per call.
 
-        NOTE: batchDelete bypasses Trash. Messages are permanently deleted.
-        The confirm-first model ensures the user has explicitly approved this.
+        Trash is recoverable for 30 days, after which Gmail purges it automatically.
+        This only needs the gmail.modify scope (users.messages.batchDelete would
+        require full https://mail.google.com/ access).
         """
         if not message_ids:
             return
         if len(message_ids) > 1000:
             raise ValueError(
-                f"Gmail API batchDelete supports max 1,000 IDs per call. "
+                f"Gmail API batchModify supports max 1,000 IDs per call. "
                 f"Got {len(message_ids)}. Split into chunks before calling."
             )
         try:
-            self._service.users().messages().batchDelete(
+            self._service.users().messages().batchModify(
                 userId=self._user_id,
-                body={"ids": message_ids},
+                body={
+                    "ids": message_ids,
+                    "addLabelIds": ["TRASH"],
+                    "removeLabelIds": ["INBOX"],
+                },
             ).execute()
-            logger.info("batchDelete: permanently deleted %d messages", len(message_ids))
+            logger.info("batchModify: moved %d messages to Trash", len(message_ids))
         except HttpError as exc:
-            logger.error("Gmail API error on batchDelete: %s", exc)
+            logger.error("Gmail API error on batchModify (trash): %s", exc)
             raise
 
     def trash_message(self, message_id: str) -> None:

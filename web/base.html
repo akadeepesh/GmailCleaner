@@ -271,7 +271,7 @@
 <aside class="sidebar">
   <div class="sidebar-logo">
     <h1>📬 GmailCleaner</h1>
-    <span>v0.4.0 · Phase 4</span>
+    <span>v{{ version }}{% if account %} · {{ account }}{% endif %}</span>
   </div>
 
   <nav>
@@ -299,6 +299,21 @@
   {% block content %}{% endblock %}
 </main>
 
+<script>
+  // POST JSON to a dashboard API route. Auth rides on the gc_token cookie.
+  async function gcPost(url, body) {
+    const resp = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    let data = {};
+    try { data = await resp.json(); } catch (e) { /* non-JSON error page */ }
+    if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+    return data;
+  }
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

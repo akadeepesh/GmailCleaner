@@ -1,5 +1,7 @@
 # GmailCleaner Configuration
 # All values here are defaults. Override per your needs.
+# Most paths and identifiers can also be overridden with environment variables
+# (see env.example) — that is how the Cloud Run deployment configures itself.
 
 scan:
   # Maximum number of emails to fetch per run.
@@ -23,13 +25,14 @@ unsubscribe:
 
 bulk_cleanup:
   # Whether to run the bulk cleanup detection engine.
+  # Confirmed cleanup groups are moved to Trash (recoverable for 30 days).
   enabled: true
 
   # Minimum emails in a group before it is surfaced as a cleanup candidate.
   min_group_size: 5
 
 triage:
-  # Whether to run AI-powered triage (Phase 3 — requires Gemini API key).
+  # Whether to run AI-powered triage (requires GEMINI_API_KEY).
   enabled: true
   model: gemini-3.5-flash
 
@@ -37,33 +40,52 @@ triage:
   confidence_threshold: 0.75
 
 digest:
-  # Whether to send a daily digest email (Phase 3).
+  # Whether to send a digest email after each scan (requires triage).
+  # The schedule is set by the Cloud Scheduler job (see deploy/deploy_job.sh).
   enabled: true
-  send_time: "07:00"
-  recipient: "akadeepesh1710@gmail.com"
+
+  # Who receives the digest. Leave empty to send it to the authenticated
+  # Gmail account itself. Env override: DIGEST_RECIPIENT.
+  recipient: ""
+
+pubsub:
+  # Full Pub/Sub topic for real-time notifications, e.g.
+  # "projects/<project-id>/topics/gmail-cleaner-notifications".
+  # Set automatically on Cloud Run via PUBSUB_TOPIC.
+  topic_name: ""
 
 # MASTER SAFETY SWITCH.
 # When true: GmailCleaner only produces reports and pending_actions.json.
-# No emails are deleted or unsubscribed without explicit --execute confirmation.
+# Nothing is unsubscribed or trashed until you confirm it.
 # Set to false only if you have configured trusted_rules below and accept the risk.
 confirm_first: true
 
-# Senders / domains GmailCleaner is allowed to act on without confirmation.
-# Only used when confirm_first is false.
+# Actions GmailCleaner may confirm on its own when confirm_first is false.
+# Matching actions are executed by `scan --no-dry-run` (what the scheduled job runs).
+# Examples:
+#   - action: unsubscribe          # unsubscribe | delete (move to Trash)
+#     domain: news.example.com     # exact sender domain
+#   - action: delete
+#     domain: "*.deals.example"    # the domain and all its subdomains
+#   - promo.example.org            # shorthand: both actions for this domain
 trusted_rules: []
 
 # Senders / domains GmailCleaner will never touch, regardless of any other setting.
 blocked_senders: []
 
 database:
-  # Path to the SQLite database file.
-  # Relative to the project root.
+  # Path to the SQLite database file, relative to the project root.
+  # Env override: DATABASE_PATH.
   path: "data/gmailcleaner.db"
+
+output:
+  # Where scans write the pending actions report. Env override: PENDING_ACTIONS_PATH.
+  pending_actions_path: "output/pending_actions.json"
 
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR
   level: "INFO"
 
-  # Whether to write logs to a file in addition to stdout.
+  # Whether to write logs to a file in addition to stdout (ignored on Cloud Run).
   file_enabled: true
   file_path: "logs/gmailcleaner.log"
