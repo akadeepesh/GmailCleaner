@@ -250,3 +250,9 @@ The test suite runs fully offline: Gmail, Gemini and HTTP are all mocked. See [A
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+<p align="center"><sub>
+  Built by <a href="https://akadeepesh.com?ref=github">Deepesh Kumar</a> · more work at <a href="https://akadeepesh.com?ref=github">akadeepesh.com</a>
+</sub></p>
