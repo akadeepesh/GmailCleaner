@@ -19,6 +19,8 @@ from email.utils import parseaddr
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+from gmail.url_guard import BlockedDestination, check_url
+
 logger = logging.getLogger(__name__)
 
 # Headers we request in metadata format. Keeping this list tight minimises
@@ -291,10 +293,26 @@ def _parse_unsubscribe_header(
     return target
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
 def _is_valid_url(url: str) -> bool:
-    """Basic URL validation — must have scheme and netloc."""
+    """
+    Pre-filter for List-Unsubscribe URLs (sender-controlled, untrusted).
+
+    Requires http(s) and a host, rejects userinfo (user:pass@), non-default
+    ports, IP literals that aren't public, and obviously internal names, so
+    such URLs never reach the pending-actions report. The executor re-checks
+    every URL and redirect hop at request time; that is the real defence,
+    since the report JSON can be edited by hand.
+    """
     try:
         parsed = urlparse(url)
-        return bool(parsed.scheme in ("http", "https") and parsed.netloc)
-    except Exception:
+        if parsed.scheme not in _DEFAULT_PORTS or not parsed.netloc:
+            return False
+        if parsed.port not in (None, _DEFAULT_PORTS[parsed.scheme]):
+            return False
+        check_url(url)
+        return True
+    except (BlockedDestination, ValueError):
         return False

@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from web.app import create_app
@@ -439,11 +440,11 @@ class TestApiExecute:
     def test_executes_and_stamps_report(self, client, app):
         path = _write_report(app, _sample_report(confirmed=True))
         mock_gmail = MagicMock()
-        mock_resp = MagicMock(status_code=200)
+        mock_resp = httpx.Response(200)
         with patch("web.app.get_credentials"), \
              patch("web.app.GmailClient", return_value=mock_gmail), \
              patch("gmail.executor.time.sleep"), \
-             patch("httpx.Client.post", return_value=mock_resp):
+             patch("httpx.Client.send", return_value=mock_resp):
             resp = client.post("/api/execute")
 
         assert resp.status_code == 200

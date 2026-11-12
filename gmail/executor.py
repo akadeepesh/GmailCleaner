@@ -24,6 +24,7 @@ import httpx
 from googleapiclient.errors import HttpError
 
 from gmail.client import GmailClient
+from gmail.url_guard import BlockedDestination, GuardedTransport, check_url
 from store.db import Database
 from version import __version__
 
@@ -94,13 +95,34 @@ class GmailExecutor:
     _UNSUB_DELAY = 1.0
     # Batch trash chunk size (Gmail API batchModify hard limit).
     _DELETE_CHUNK = 1000
+    # Unsubscribe requests: redirect hops followed, and response bytes read.
+    _MAX_REDIRECTS = 5
+    _MAX_RESPONSE_BYTES = 1_000_000
+    _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+    _SUCCESS_CODES = frozenset({200, 202, 204, 302})
 
-    def __init__(self, client: GmailClient, db: Database) -> None:
+    def __init__(
+        self,
+        client: GmailClient,
+        db: Database,
+        transport: Optional[httpx.BaseTransport] = None,
+    ) -> None:
+        """
+        Args:
+            transport: Override the HTTP transport (tests). Defaults to
+                       GuardedTransport, which connects only to vetted public
+                       addresses. Unsubscribe URLs are sender-controlled.
+        """
         self._client = client
         self._db = db
         self._http = httpx.Client(
             timeout=self._HTTP_TIMEOUT,
-            follow_redirects=True,
+            # Redirects are followed manually so every hop is checked.
+            follow_redirects=False,
+            # Ignore HTTP(S)_PROXY etc.: through a proxy the connect-time
+            # address check would only ever see the proxy.
+            trust_env=False,
+            transport=transport or GuardedTransport(),
             headers={
                 # Identify ourselves politely.
                 "User-Agent": f"GmailCleaner/{__version__} (https://github.com/akadeepesh/GmailCleaner)"
@@ -179,48 +201,100 @@ class GmailExecutor:
         RFC 8058 one-click POST unsubscribe.
         Sends: POST <url> with body: List-Unsubscribe=One-Click
         """
-        try:
-            resp = self._http.post(
-                url,
-                content=b"List-Unsubscribe=One-Click",
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            success = resp.status_code in (200, 202, 204, 302)
-            return UnsubscribeResult(
-                domain=domain,
-                method="http_post",
-                success=success,
-                status_code=resp.status_code,
-                error=None if success else f"Unexpected HTTP {resp.status_code}",
-            )
-        except httpx.TimeoutException:
-            return UnsubscribeResult(domain=domain, method="http_post", success=False,
-                                     error="Request timed out")
-        except httpx.RequestError as exc:
-            return UnsubscribeResult(domain=domain, method="http_post", success=False,
-                                     error=str(exc))
+        return self._unsub_http(
+            domain, url, "http_post", "POST",
+            content=b"List-Unsubscribe=One-Click",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
 
     def _unsub_http_get(self, domain: str, url: str) -> UnsubscribeResult:
         """
         Plain HTTP GET unsubscribe (non-RFC 8058 fallback).
         Some senders require a browser-style GET to complete unsubscription.
         """
+        return self._unsub_http(domain, url, "http_get", "GET")
+
+    def _unsub_http(
+        self,
+        domain: str,
+        url: str,
+        method_name: str,
+        http_method: str,
+        content: Optional[bytes] = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> UnsubscribeResult:
         try:
-            resp = self._http.get(url)
-            success = resp.status_code in (200, 202, 204, 302)
-            return UnsubscribeResult(
-                domain=domain,
-                method="http_get",
-                success=success,
-                status_code=resp.status_code,
-                error=None if success else f"Unexpected HTTP {resp.status_code}",
-            )
+            status = self._request(http_method, url, content=content, headers=headers)
+        except BlockedDestination as exc:
+            # Log the domain and reason only, never the URL (it can carry tokens).
+            logger.warning("Blocked unsafe unsubscribe URL for %s: %s", domain, exc)
+            return UnsubscribeResult(domain=domain, method=method_name, success=False,
+                                     error=f"Blocked unsafe unsubscribe URL: {exc}")
         except httpx.TimeoutException:
-            return UnsubscribeResult(domain=domain, method="http_get", success=False,
+            return UnsubscribeResult(domain=domain, method=method_name, success=False,
                                      error="Request timed out")
         except httpx.RequestError as exc:
-            return UnsubscribeResult(domain=domain, method="http_get", success=False,
+            return UnsubscribeResult(domain=domain, method=method_name, success=False,
                                      error=str(exc))
+        except httpx.InvalidURL:
+            return UnsubscribeResult(domain=domain, method=method_name, success=False,
+                                     error="Invalid unsubscribe URL")
+
+        success = status in self._SUCCESS_CODES
+        return UnsubscribeResult(
+            domain=domain,
+            method=method_name,
+            success=success,
+            status_code=status,
+            error=None if success else f"Unexpected HTTP {status}",
+        )
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        content: Optional[bytes] = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> int:
+        """
+        Send an unsubscribe request, following up to _MAX_REDIRECTS redirects
+        by hand so that every hop passes check_url() (and, via the transport,
+        the connect-time address check). Returns the final status code.
+
+        Raises BlockedDestination, httpx.TooManyRedirects or other httpx errors.
+        """
+        for _ in range(self._MAX_REDIRECTS + 1):
+            check_url(url)
+            request = self._http.build_request(method, url, content=content, headers=headers)
+            response = self._http.send(request, stream=True)
+            try:
+                location = response.headers.get("location")
+                if response.status_code not in self._REDIRECT_CODES or not location:
+                    self._drain(response)
+                    return response.status_code
+                status = response.status_code
+            finally:
+                response.close()
+
+            # Resolve relative Location headers against the current URL.
+            url = str(request.url.join(location))
+            # Browser behaviour: 303 always becomes GET; 301/302 after POST too.
+            if status == 303 or (status in (301, 302) and method == "POST"):
+                if method != "HEAD":
+                    method, content, headers = "GET", None, None
+
+        raise httpx.TooManyRedirects(f"Exceeded {self._MAX_REDIRECTS} redirects")
+
+    def _drain(self, response: httpx.Response) -> None:
+        """Read at most _MAX_RESPONSE_BYTES of the body; only the status matters."""
+        if response.is_stream_consumed:  # body already in memory
+            return
+        read = 0
+        # Raw (still-compressed) bytes, so a compression bomb can't inflate past the cap.
+        for chunk in response.iter_raw():
+            read += len(chunk)
+            if read >= self._MAX_RESPONSE_BYTES:
+                break
 
     def _unsub_mailto(self, domain: str, mailto_addr: str) -> UnsubscribeResult:
         """
