@@ -231,3 +231,15 @@ db.py (action_log, senders, runs)
 - The dashboard service is reachable on the internet but enforces token authentication. The webhook accepts only Google-signed tokens for the configured audience and service account.
 - Containers run as a non-root user. The only outbound calls go to the Gmail API, the Gemini API and the unsubscribe endpoints that senders publish.
 - GmailCleaner never stores email body content anywhere.
+
+### Unsubscribe URLs are untrusted
+
+`List-Unsubscribe` URLs are written by whoever sent the email, and GmailCleaner requests them after you confirm an action, or unattended when a trusted rule matches. Unsubscribe requests are therefore restricted to public internet destinations (`gmail/url_guard.py`):
+
+- **URL rules.** The scheme must be `http` or `https`, `user:pass@` is not allowed, and the port must be the default or 80, 443, 8080 or 8443. The parser applies a stricter version (default ports only) so obviously bad URLs never reach `pending_actions.json`. The executor checks again at request time, because the report can be edited by hand.
+- **Address rules.** Only globally routable unicast addresses are allowed. That excludes loopback, private, link-local (including the metadata server at `169.254.169.254`), CGNAT, multicast and reserved ranges, plus IPv6 forms that embed one of those addresses (IPv4-mapped, NAT64, 6to4, Teredo). Obviously internal names (`localhost`, `*.local`, `*.internal`, `*.localhost`, `*.home.arpa`, `*.lan`, single-label names) and unusual IP spellings such as `2130706433` or `0x7f.0.0.1` are refused before any DNS lookup.
+- **Connect to what was checked.** A custom `httpcore` network backend resolves the hostname, refuses it if any resolved address is non-public, and then connects to one of those vetted IPs. That way DNS rebinding can't swap in a private address between the check and the connection. TLS still verifies the certificate against the original hostname.
+- **Redirects are followed by hand.** At most 5 hops are followed, and each one goes through the same checks. A 303, or a 301/302 after a POST, becomes a GET.
+- **No proxies, small reads.** Proxy environment variables are ignored, because with a proxy the address check would only see the proxy. At most 1 MB of each response is read, since only the status code matters.
+
+A blocked URL is recorded as a failed HTTP attempt (`Blocked unsafe unsubscribe URL: <reason>`). Execution then falls back to the `mailto` address if there is one. Logs name the sender domain, never the URL, because the URL can contain tokens.

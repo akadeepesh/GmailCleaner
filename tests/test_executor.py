@@ -4,6 +4,9 @@ Tests for gmail/executor.py
 Covers:
   - Unsubscribe method priority: one-click POST > GET > mailto fallback
   - HTTP success / failure status codes, timeouts and network errors
+  - Unsubscribe hardening: blocked URLs, every redirect hop checked and capped,
+    browser-style method switching, mailto fallback, response size cap,
+    connect-time (DNS rebinding) block via the default guarded transport
   - Mailto unsubscribe composes an "unsubscribe" email via the Gmail API
   - DB updates: mark_unsubscribed + action status on success and failure
   - delete_group: moves messages to Trash in 1,000-ID chunks
@@ -29,6 +32,7 @@ from gmail.executor import (
     execute_report,
     find_or_create_action,
 )
+from gmail.url_guard import GuardedTransport
 from store.db import Database
 
 
@@ -50,9 +54,34 @@ def db():
     return MagicMock()
 
 
+class FakeServer:
+    """httpx.MockTransport handler that records requests and returns canned responses."""
+
+    def __init__(self):
+        self.requests: list[httpx.Request] = []
+        self.handler = lambda request: httpx.Response(200)
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return self.handler(request)
+
+    def respond(self, status: int = 200, **kwargs) -> None:
+        self.handler = lambda request: httpx.Response(status, **kwargs)
+
+    def raise_(self, exc: Exception) -> None:
+        def handler(request):
+            raise exc
+        self.handler = handler
+
+
 @pytest.fixture
-def executor(client, db):
-    with GmailExecutor(client, db) as ex:
+def server():
+    return FakeServer()
+
+
+@pytest.fixture
+def executor(client, db, server):
+    with GmailExecutor(client, db, transport=httpx.MockTransport(server)) as ex:
         yield ex
 
 
@@ -66,54 +95,55 @@ def _http_error(status: int = 500) -> HttpError:
 # ── Unsubscribe ───────────────────────────────────────────────────────────────
 
 class TestUnsubscribe:
-    def test_one_click_uses_post(self, executor, db):
-        with patch.object(executor._http, "post", return_value=MagicMock(status_code=200)) as post:
-            result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u",
-                                          supports_one_click=True)
+    def test_one_click_uses_post(self, executor, db, server):
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u",
+                                      supports_one_click=True)
         assert result.success and result.method == "http_post"
-        _, kwargs = post.call_args
-        assert kwargs["content"] == b"List-Unsubscribe=One-Click"
-        assert kwargs["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+        [request] = server.requests
+        assert request.method == "POST"
+        assert request.content == b"List-Unsubscribe=One-Click"
+        assert request.headers["Content-Type"] == "application/x-www-form-urlencoded"
         db.mark_unsubscribed.assert_called_once_with("a.com", "http_post")
         db.update_action_status.assert_called_once_with(1, "executed")
 
-    def test_plain_http_uses_get(self, executor):
-        with patch.object(executor._http, "get", return_value=MagicMock(status_code=204)) as get, \
-             patch.object(executor._http, "post") as post:
-            result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u")
+    def test_plain_http_uses_get(self, executor, server):
+        server.respond(204)
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u")
         assert result.success and result.method == "http_get"
-        get.assert_called_once_with("https://a.com/u")
-        post.assert_not_called()
+        [request] = server.requests
+        assert request.method == "GET"
+        assert str(request.url) == "https://a.com/u"
 
     @pytest.mark.parametrize("status", [200, 202, 204, 302])
-    def test_success_status_codes(self, executor, status):
-        with patch.object(executor._http, "get", return_value=MagicMock(status_code=status)):
-            assert executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u").success
+    def test_success_status_codes(self, executor, server, status):
+        # A 302 without a Location header is final and still counts as success.
+        server.respond(status)
+        assert executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u").success
 
-    def test_http_error_status_marks_failed(self, executor, db):
-        with patch.object(executor._http, "get", return_value=MagicMock(status_code=404)):
-            result = executor.unsubscribe("a.com", "r1", 7, http_url="https://a.com/u")
+    def test_http_error_status_marks_failed(self, executor, db, server):
+        server.respond(404)
+        result = executor.unsubscribe("a.com", "r1", 7, http_url="https://a.com/u")
         assert not result.success
         assert result.status_code == 404
         assert "404" in result.error
         db.mark_unsubscribed.assert_not_called()
         db.update_action_status.assert_called_once_with(7, "failed", error=result.error)
 
-    def test_timeout_reported(self, executor):
-        with patch.object(executor._http, "post", side_effect=httpx.TimeoutException("slow")):
-            result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u",
-                                          supports_one_click=True)
+    def test_timeout_reported(self, executor, server):
+        server.raise_(httpx.TimeoutException("slow"))
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u",
+                                      supports_one_click=True)
         assert not result.success and result.error == "Request timed out"
 
-    def test_network_error_reported(self, executor):
-        with patch.object(executor._http, "get", side_effect=httpx.ConnectError("refused")):
-            result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u")
+    def test_network_error_reported(self, executor, server):
+        server.raise_(httpx.ConnectError("refused"))
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u")
         assert not result.success and "refused" in result.error
 
-    def test_http_failure_falls_back_to_mailto(self, executor, client):
-        with patch.object(executor._http, "get", return_value=MagicMock(status_code=500)):
-            result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u",
-                                          mailto="unsub@a.com")
+    def test_http_failure_falls_back_to_mailto(self, executor, client, server):
+        server.respond(500)
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u",
+                                      mailto="unsub@a.com")
         assert result.success and result.method == "mailto"
         client.send_message.assert_called_once()
 
@@ -142,6 +172,124 @@ class TestUnsubscribe:
         ua = executor._http.headers["User-Agent"]
         assert ua.startswith("GmailCleaner/")
         assert "github.com/akadeepesh/GmailCleaner" in ua
+
+    def test_client_ignores_proxy_env_and_does_not_auto_follow(self, client, db, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.0.0.1:3128")
+        monkeypatch.setenv("HTTP_PROXY", "http://10.0.0.1:3128")
+        with GmailExecutor(client, db) as ex:
+            assert ex._http.trust_env is False
+            assert ex._http.follow_redirects is False
+            assert isinstance(ex._http._transport, GuardedTransport)
+
+
+# ── Unsubscribe request hardening ─────────────────────────────────────────────
+
+class TestUnsubscribeHardening:
+    @pytest.mark.parametrize("url", [
+        "http://169.254.169.254/computeMetadata/v1/",
+        "http://127.0.0.1:8080/api/execute",
+        "http://localhost/",
+        "http://user:pass@a.com/u",
+        "http://a.com:22/u",
+    ])
+    def test_blocked_url_never_requested(self, executor, server, db, url):
+        result = executor.unsubscribe("a.com", "r1", 1, http_url=url)
+        assert not result.success
+        assert result.error.startswith("Blocked unsafe unsubscribe URL: ")
+        assert server.requests == []
+        db.mark_unsubscribed.assert_not_called()
+
+    def test_redirect_to_metadata_server_stops(self, executor, server):
+        server.respond(302, headers={"Location": "http://169.254.169.254/computeMetadata/v1/"})
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u")
+        assert not result.success
+        assert result.error.startswith("Blocked unsafe unsubscribe URL: ")
+        assert [str(r.url) for r in server.requests] == ["https://a.com/u"]
+
+    def test_more_than_five_redirects_fails(self, executor, server):
+        server.handler = lambda r: httpx.Response(
+            302, headers={"Location": f"/hop{len(server.requests)}"})
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u")
+        assert not result.success
+        assert "redirect" in result.error.lower()
+        assert len(server.requests) == 6  # the original request + 5 followed hops
+
+    def test_follows_five_redirects(self, executor, server):
+        def handler(request):
+            n = len(server.requests)
+            if n <= 5:
+                return httpx.Response(301, headers={"Location": f"/hop{n}"})
+            return httpx.Response(200)
+        server.handler = handler
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u")
+        assert result.success and result.status_code == 200
+        assert str(server.requests[-1].url) == "https://a.com/hop5"
+
+    def test_relative_location_and_https_to_http_allowed(self, executor, server):
+        def handler(request):
+            if request.url.path == "/u":
+                return httpx.Response(307, headers={"Location": "done?x=1"})
+            if request.url.path == "/done":
+                return httpx.Response(302, headers={"Location": "http://b.com/final"})
+            return httpx.Response(200)
+        server.handler = handler
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u")
+        assert result.success
+        assert [str(r.url) for r in server.requests] == [
+            "https://a.com/u", "https://a.com/done?x=1", "http://b.com/final"]
+
+    @pytest.mark.parametrize("status,expected", [
+        (303, "GET"), (302, "GET"), (301, "GET"), (307, "POST"), (308, "POST")])
+    def test_redirect_method_after_post(self, executor, server, status, expected):
+        server.handler = lambda r: (
+            httpx.Response(status, headers={"Location": "/next"}) if r.url.path == "/u"
+            else httpx.Response(200))
+        executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u",
+                             supports_one_click=True)
+        second = server.requests[1]
+        assert second.method == expected
+        if expected == "GET":
+            assert second.content == b""
+            assert "content-type" not in second.headers
+        else:
+            assert second.content == b"List-Unsubscribe=One-Click"
+
+    def test_blocked_url_falls_back_to_mailto(self, executor, server, client, caplog):
+        with caplog.at_level("WARNING", logger="gmail.executor"):
+            result = executor.unsubscribe(
+                "a.com", "r1", 1,
+                http_url="http://169.254.169.254/computeMetadata/v1/?token=SECRET",
+                mailto="unsub@a.com")
+        assert result.success and result.method == "mailto"
+        client.send_message.assert_called_once()
+        assert server.requests == []
+        assert "a.com" in caplog.text
+        assert "SECRET" not in caplog.text
+        assert "computeMetadata" not in caplog.text
+
+    def test_response_body_read_is_capped(self, executor, server):
+        consumed = {"bytes": 0}
+
+        def body():
+            for _ in range(10_000):  # ~640 MB if fully read
+                consumed["bytes"] += 65536
+                yield b"x" * 65536
+
+        server.handler = lambda r: httpx.Response(200, content=body())
+        result = executor.unsubscribe("a.com", "r1", 1, http_url="https://a.com/u")
+        assert result.success
+        assert consumed["bytes"] <= GmailExecutor._MAX_RESPONSE_BYTES + 65536
+
+    def test_dns_rebinding_blocked_by_default_transport(self, client, db):
+        # Passes check_url (public-looking name) but resolves to a private
+        # address at connect time: the guarded transport must refuse.
+        with patch("gmail.url_guard.socket.getaddrinfo") as dns, \
+             GmailExecutor(client, db) as ex:
+            dns.return_value = [(2, 1, 6, "", ("10.0.0.5", 443))]
+            result = ex.unsubscribe("a.com", "r1", 1, http_url="https://unsub.a.com/u")
+        assert not result.success
+        assert result.error.startswith("Blocked unsafe unsubscribe URL: ")
+        assert "10.0.0.5" in result.error
 
 
 # ── Bulk cleanup ──────────────────────────────────────────────────────────────
@@ -234,11 +382,12 @@ class TestExecuteReport:
         report = _report()
         seen = []
 
-        with GmailExecutor(client, db) as ex, \
-             patch.object(ex._http, "post", return_value=MagicMock(status_code=200)):
+        server = FakeServer()
+        with GmailExecutor(client, db, transport=httpx.MockTransport(server)) as ex:
             summary = execute_report(ex, db, report, on_result=lambda t, i, r: seen.append((t, i.get("domain") or i["group_id"])))
 
         assert summary.total_unsubscribed == 1
+        assert [r.method for r in server.requests] == ["POST"]
         assert summary.total_deleted == 2
         assert seen == [("unsubscribe", "a.com"), ("delete", "domain:d.com")]
         assert report["unsubscribe"][0]["executed_at"]

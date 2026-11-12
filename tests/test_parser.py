@@ -179,6 +179,25 @@ class TestParseUnsubscribeHeader:
         target = _parse_unsubscribe_header(header, None)
         assert target is None
 
+    @pytest.mark.parametrize("url", [
+        "http://user:pass@example.com/unsub",
+        "https://example.com:8443/unsub",
+        "http://example.com:22/unsub",
+        "http://169.254.169.254/computeMetadata/v1/",
+        "http://127.0.0.1:8080/api/execute",
+        "http://localhost/unsub",
+        "http://metadata.google.internal/",
+    ])
+    def test_unsafe_http_url_dropped_keeps_mailto(self, url):
+        target = _parse_unsubscribe_header(f"<{url}>, <mailto:unsub@example.com>", None)
+        assert target is not None
+        assert target.http_url is None
+        assert target.mailto == "unsub@example.com"
+
+    @pytest.mark.parametrize("url", ["https://example.com:443/u", "http://example.com:80/u"])
+    def test_explicit_default_port_allowed(self, url):
+        assert _parse_unsubscribe_header(f"<{url}>", None).http_url == url
+
     def test_mailto_with_query_string_stripped(self):
         header = "<mailto:unsub@example.com?subject=unsubscribe>"
         target = _parse_unsubscribe_header(header, None)

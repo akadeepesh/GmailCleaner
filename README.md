@@ -222,6 +222,7 @@ gcloud run jobs execute gmail-cleaner --region=us-central1 --args=execute,--yes 
 - **Least-privilege scopes.** `gmail.readonly`, `gmail.modify` (labels and Trash) and `gmail.send` (the digest and mailto unsubscribes).
 - **Secrets stay secret.** The OAuth token is stored locally with `0600` permissions or in Secret Manager, and never baked into an image.
 - **Authenticated endpoints.** The dashboard requires `DASHBOARD_SECRET` (compared in constant time). The webhook verifies Pub/Sub's signed OIDC token, including its audience and service account.
+- **Unsubscribe links are untrusted.** Senders choose them, so GmailCleaner only requests public internet addresses. That rules out localhost, private networks and the cloud metadata server. Every redirect is checked, and proxies are ignored. See [Architecture.md](Architecture.md#unsubscribe-urls-are-untrusted).
 - Treat `pending_actions.json` and the database as personal data: they contain senders and subjects.
 
 > Running the dashboard without `DASHBOARD_SECRET` disables authentication. Do that only on `127.0.0.1`.

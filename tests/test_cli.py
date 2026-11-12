@@ -18,6 +18,7 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 import yaml
 from click.testing import CliRunner
@@ -70,7 +71,7 @@ def env(tmp_path, monkeypatch):
          patch.object(main, "GmailClient", return_value=gmail), \
          patch.object(main.GmailFetcher, "fetch_inbox", return_value=MESSAGES), \
          patch("gmail.executor.time.sleep"), \
-         patch("httpx.Client.post", return_value=MagicMock(status_code=200)) as http_post:
+         patch("httpx.Client.send", return_value=httpx.Response(200)) as http_post:
         yield {
             "tmp": tmp_path,
             "write_config": write_config,
