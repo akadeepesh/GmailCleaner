@@ -101,6 +101,24 @@ python main.py execute
 
 ---
 
+## Desktop (beta)
+
+The desktop mode runs everything from the browser: sign in with Google, scan, review, execute, change settings, add and switch Gmail accounts, and download CSVs, all without the terminal or YAML.
+
+```bash
+pip install -r requirements.txt
+python -m desktop               # opens http://127.0.0.1:8765 in your browser
+```
+
+- **Your data lives in one folder**: `%LOCALAPPDATA%\GmailCleaner` on Windows, `~/Library/Application Support/GmailCleaner` on macOS, `~/.local/share/GmailCleaner` on Linux. Use `--home DIR` to pick another folder. Your checkout's `config/`, `data/` and `output/` are left alone.
+- **Sign-in** happens inside the dashboard. Until release builds ship with a built-in Google client, upload your own Desktop-app `credentials.json` under **Settings → Google sign-in** (or keep it in `config/credentials.json`).
+- **Settings** you change in the app are saved to `settings.user.yaml` in that folder, on top of the shipped `config/settings.yaml`. Environment variables still win. The Gemini key is stored in your OS keychain.
+- **Security**: the app listens on `127.0.0.1` only and creates a fresh secret on every launch, which the browser receives once. Bookmarks stop working after a restart; reopen the app with `python -m desktop`. Press Ctrl+C to quit.
+
+The CLI and the Cloud Run deployment work exactly as before.
+
+---
+
 ## Commands
 
 | Command | What it does |
