@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Accounts — GmailCleaner{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between">
+    <div>
+        <h2>Accounts</h2>
+        <p>The Gmail accounts GmailCleaner looks after. Each has its own suggestions and history.</p>
+    </div>
+    {% if sign_in_enabled and not pinned %}
+    <a href="/auth/start" class="btn btn-primary">+ Add a Gmail account</a>
+    {% endif %}
+</div>
+
+{% if sign_in_enabled and not has_client %}
+<div class="alert alert-warn">
+    Google sign-in isn't set up in this copy of GmailCleaner.
+    Upload your own credentials.json under <a href="/settings#signin">Settings → Google sign-in</a> first.
+</div>
+{% endif %}
+
+<div class="card">
+    {% if rows %}
+    <table>
+        <thead>
+            <tr>
+                <th>Account</th>
+                <th>Status</th>
+                <th>Last scan</th>
+                <th style="text-align:right;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            {% set a = row.info %}
+            <tr>
+                <td>
+                    <div style="font-weight:600;">{{ a.label }}</div>
+                    {% if a.key == current_key %}<div class="muted small">shown now</div>{% endif %}
+                </td>
+                <td>
+                    {% if a.signed_in %}<span class="badge badge-green">Signed in</span>
+                    {% else %}<span class="badge badge-yellow">Needs sign-in</span>{% endif %}
+                </td>
+                <td class="muted">{{ row.last_run | ago }}</td>
+                <td style="text-align:right;">
+                    <div class="flex gap-2" style="justify-content:flex-end;">
+                        {% if a.key != current_key and not pinned %}
+                        <button type="button" class="btn btn-ghost btn-sm" data-account="{{ a.key }}"
+                            onclick="switchAccount(this.dataset.account)">Switch</button>
+                        {% endif %}
+                        {% if sign_in_enabled %}
+                        {% if not a.signed_in %}
+                        <a class="btn btn-primary btn-sm" href="/auth/start">Sign in again</a>
+                        {% endif %}
+                        <button type="button" class="btn btn-ghost btn-sm" data-account="{{ a.key }}"
+                            data-label="{{ a.label }}" onclick="signOut(this)">Sign out</button>
+                        <button type="button" class="btn btn-danger btn-sm" data-account="{{ a.key }}"
+                            data-label="{{ a.label }}" onclick="removeData(this)">Remove data</button>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+        <p>No Gmail account yet.</p>
+        {% if sign_in_enabled %}<a href="/auth/start" class="btn btn-primary">Sign in with Google</a>{% endif %}
+    </div>
+    {% endif %}
+</div>
+
+<p class="muted small">Signing out removes GmailCleaner's access at Google and deletes the saved sign-in from
+    this computer. Your suggestions and history stay until you choose "Remove data".</p>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function signOut(btn) {
+    const ok = await gcConfirm("Sign out of " + btn.dataset.label + "?",
+      "GmailCleaner will lose access to this account until you sign in again. " +
+      "Your suggestions and history on this computer are kept.",
+      { okLabel: "Sign out", danger: true });
+    if (!ok) return;
+    try {
+      await gcPost("/api/accounts/signout", { account: btn.dataset.account });
+      gcToast("Signed out.", "ok");
+      setTimeout(() => location.reload(), 800);
+    } catch (err) { gcToast(err.message, "error"); }
+  }
+
+  async function removeData(btn) {
+    const first = await gcConfirm("Remove " + btn.dataset.label + " from GmailCleaner?",
+      "This signs out and deletes this account's suggestions, history and stats from this computer. " +
+      "Your Gmail itself is not changed.", { okLabel: "Continue", danger: true });
+    if (!first) return;
+    const typed = await gcConfirm("Are you sure?", "Type REMOVE to confirm.",
+      { okLabel: "Remove data", danger: true, input: "REMOVE" });
+    if (typed !== "REMOVE") { if (typed !== false) gcToast("Nothing was removed.", "warn"); return; }
+    try {
+      await gcPost("/api/accounts/remove", { account: btn.dataset.account, confirm: "REMOVE" });
+      gcToast("Removed.", "ok");
+      setTimeout(() => location.reload(), 800);
+    } catch (err) { gcToast(err.message, "error"); }
+  }
+</script>
+{% endblock %}

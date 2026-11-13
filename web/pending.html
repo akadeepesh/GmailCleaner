@@ -5,7 +5,7 @@
 <div class="page-header flex-between">
     <div>
         <h2>Pending Actions</h2>
-        <p>Review and confirm what GmailCleaner should do</p>
+        <p>Approve what GmailCleaner should do. Nothing happens until you press the button at the bottom.</p>
     </div>
     <div class="flex gap-2">
         <span class="muted" style="font-size: 12px;">
@@ -20,43 +20,57 @@
 {% set unclassified = report.triage.unclassified | default([]) %}
 
 {% if not unsub_items and not delete_items and not needs_reply %}
-<div class="alert alert-ok">
-    ✓ No pending actions. Run <code>python main.py scan</code> to generate a new report.
+<div class="card empty-state">
+    <p>No suggestions yet: run a scan.</p>
+    <button type="button" class="btn btn-primary" onclick="gcRunScan(this, 'pending-scan')"
+        {% if active_job %}disabled{% endif %}>🔍 Scan my inbox now</button>
+    <div class="progress-wrap" id="pending-scan" style="max-width:420px;margin:14px auto 0;">
+        <div class="progress"><div class="progress-fill"></div></div>
+        <div class="muted small mt-1 progress-step">Starting…</div>
+    </div>
 </div>
 {% endif %}
 
 <!-- Unsubscribe candidates -->
 {% if unsub_items %}
+{% set open_unsub = unsub_items | rejectattr('executed_at') | list %}
 <div class="card">
-    <div class="flex-between mb" style="margin-bottom: 14px;">
+    <div class="flex-between" style="margin-bottom: 14px;">
         <div class="card-title" style="margin-bottom:0;">
-            Unsubscribe Candidates
+            Newsletters to unsubscribe from
             <span class="badge badge-blue" style="margin-left:8px;">{{ unsub_items | length }}</span>
         </div>
         <div class="flex gap-2">
             <span class="muted" style="font-size:12px;">
-                {{ unsub_items | selectattr('confirmed') | list | length }} confirmed
+                {{ unsub_items | selectattr('confirmed') | list | length }} approved
             </span>
+            {% if open_unsub %}
+            <button type="button" class="btn btn-ghost btn-sm"
+                data-type="unsubscribe" data-targets='{{ open_unsub | map(attribute="domain") | list | tojson }}'
+                onclick="selectAll(this, true)">Select all in this section</button>
+            <button type="button" class="btn btn-ghost btn-sm"
+                data-type="unsubscribe" data-targets='{{ open_unsub | map(attribute="domain") | list | tojson }}'
+                onclick="selectAll(this, false)">Clear</button>
+            {% endif %}
         </div>
     </div>
     <table>
         <thead>
             <tr>
-                <th>Sender</th>
-                <th>Emails</th>
+                <th>What will happen</th>
                 <th>Method</th>
-                <th>Last Subject</th>
-                <th>Action</th>
+                <th>Latest subject</th>
+                <th>Approve</th>
             </tr>
         </thead>
         <tbody>
             {% for item in unsub_items %}
             <tr id="unsub-{{ loop.index }}">
                 <td>
-                    <div style="font-weight:600;">{{ item.display_name | e }}</div>
-                    <div class="muted mono">{{ item.domain }}</div>
+                    <div style="font-weight:600;">Stop emails from {{ item.display_name or item.domain }}</div>
+                    <div class="muted small">{{ item.email_count }} email{{ '' if item.email_count == 1 else 's' }}
+                        in {{ lookback_days }} days · <span class="mono">{{ item.domain }}</span></div>
                 </td>
-                <td>{{ item.email_count }}</td>
                 <td>
                     {% if 'One-click' in item.method %}
                     <span class="badge badge-green">{{ item.method }}</span>
@@ -67,19 +81,18 @@
                     {% endif %}
                 </td>
                 <td class="muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                    {{ item.representative_subject | e }}
+                    {{ item.representative_subject }}
                 </td>
                 <td>
                     {% if item.executed_at %}
                     <span class="badge badge-green">✓ Done</span>
                     {% else %}
                     <button type="button"
-                        class="btn {% if item.confirmed %}btn-primary{% else %}btn-ghost{% endif %}"
-                        style="font-size:12px;padding:4px 10px;"
+                        class="btn btn-sm {% if item.confirmed %}btn-primary{% else %}btn-ghost{% endif %}"
                         data-type="unsubscribe" data-target="{{ item.domain }}"
                         data-confirmed="{{ 'true' if item.confirmed else 'false' }}"
                         onclick="toggleConfirm(this)">
-                        {% if item.confirmed %}✓ Confirmed{% else %}Confirm{% endif %}
+                        {% if item.confirmed %}✓ Approved{% else %}Approve{% endif %}
                     </button>
                     {% if item.auto_confirmed %}<div class="muted" style="font-size:11px;margin-top:3px;">by trusted rule</div>{% endif %}
                     {% endif %}
@@ -93,35 +106,48 @@
 
 <!-- Delete groups -->
 {% if delete_items %}
+{% set open_delete = delete_items | rejectattr('executed_at') | list %}
 <div class="card">
     <div class="flex-between" style="margin-bottom: 14px;">
         <div class="card-title" style="margin-bottom:0;">
-            Bulk Cleanup Groups
+            Clutter to move to Trash
             <span class="badge badge-yellow" style="margin-left:8px;">{{ delete_items | length }}</span>
         </div>
-        <div class="muted" style="font-size:12px;">
-            {{ delete_items | sum(attribute='email_count') | int }} emails total · confirmed groups are moved to Trash
+        <div class="flex gap-2">
+            <span class="muted" style="font-size:12px;">
+                {{ delete_items | sum(attribute='email_count') | int }} emails · Trash keeps them for 30 days
+            </span>
+            {% if open_delete %}
+            <button type="button" class="btn btn-ghost btn-sm"
+                data-type="delete" data-targets='{{ open_delete | map(attribute="group_id") | list | tojson }}'
+                onclick="selectAll(this, true)">Select all in this section</button>
+            <button type="button" class="btn btn-ghost btn-sm"
+                data-type="delete" data-targets='{{ open_delete | map(attribute="group_id") | list | tojson }}'
+                onclick="selectAll(this, false)">Clear</button>
+            {% endif %}
         </div>
     </div>
     <table>
         <thead>
             <tr>
-                <th>Group</th>
-                <th>Emails</th>
+                <th>What will happen</th>
                 <th>Oldest</th>
                 <th>Risk</th>
                 <th>Flags</th>
-                <th>Action</th>
+                <th>Approve</th>
             </tr>
         </thead>
         <tbody>
             {% for item in delete_items %}
             <tr>
                 <td>
-                    <div style="font-weight:600;">{{ item.label | e }}</div>
-                    <div class="muted" style="font-size:11px;">{{ item.group_type }} group</div>
+                    <div style="font-weight:600;">
+                        Move {{ item.email_count }} email{{ '' if item.email_count == 1 else 's' }}
+                        {% if item.group_type == 'domain' %}from {{ item.label }}{% else %}matching "{{ item.label }}"{% endif %}
+                        to Trash
+                    </div>
+                    <div class="muted" style="font-size:11px;">grouped by {{ 'sender' if item.group_type == 'domain' else 'subject' }}</div>
                 </td>
-                <td>{{ item.email_count }}</td>
                 <td class="muted">{{ item.oldest_date }}</td>
                 <td>
                     {% if item.score_label == 'high' %}
@@ -141,12 +167,11 @@
                     <span class="badge badge-green">✓ Done</span>
                     {% else %}
                     <button type="button"
-                        class="btn {% if item.confirmed %}btn-primary{% else %}btn-ghost{% endif %}"
-                        style="font-size:12px;padding:4px 10px;"
+                        class="btn btn-sm {% if item.confirmed %}btn-primary{% else %}btn-ghost{% endif %}"
                         data-type="delete" data-target="{{ item.group_id }}"
                         data-confirmed="{{ 'true' if item.confirmed else 'false' }}"
                         onclick="toggleConfirm(this)">
-                        {% if item.confirmed %}✓ Confirmed{% else %}Confirm{% endif %}
+                        {% if item.confirmed %}✓ Approved{% else %}Approve{% endif %}
                     </button>
                     {% if item.auto_confirmed %}<div class="muted" style="font-size:11px;margin-top:3px;">by trusted rule</div>{% endif %}
                     {% endif %}
@@ -178,7 +203,7 @@
             {% for item in needs_reply[:10] %}
             <tr>
                 <td>
-                    <div style="font-weight:600;">{{ item.sender_name | e or item.sender_email | e }}</div>
+                    <div style="font-weight:600;">{{ item.sender_name or item.sender_email }}</div>
                     <div class="muted mono" style="font-size:11px;">{{ item.sender_email }}</div>
                 </td>
                 <td>
@@ -186,7 +211,7 @@
                     <span
                         style="width:7px;height:7px;border-radius:50%;background:var(--red);display:inline-block;margin-right:5px;"></span>
                     {% endif %}
-                    {{ item.subject | e }}
+                    {{ item.subject }}
                 </td>
                 <td class="muted">{{ item.date }}</td>
                 <td>
@@ -210,7 +235,7 @@
 {% if unclassified %}
 <div class="card">
     <div class="card-title">
-        ❓ Needs Review (low confidence)
+        ❓ Needs Review (AI wasn't sure)
         <span class="badge badge-purple" style="margin-left:8px;">{{ unclassified | length }}</span>
     </div>
     <table>
@@ -226,9 +251,9 @@
             {% for item in unclassified[:10] %}
             <tr>
                 <td class="mono" style="font-size:12px;">{{ item.sender_email }}</td>
-                <td>{{ item.subject | e }}</td>
+                <td>{{ item.subject }}</td>
                 <td><span class="badge badge-muted">{{ (item.confidence * 100) | int }}%</span></td>
-                <td class="muted" style="font-size:12px;">{{ item.reason | e | truncate(60) }}</td>
+                <td class="muted" style="font-size:12px;">{{ item.reason | truncate(60) }}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -240,19 +265,28 @@
 {% if unsub_items or delete_items %}
 <div class="card">
     <div class="flex-between" style="margin-bottom: 12px;">
-        <div class="card-title" style="margin-bottom:0;">Execute Confirmed Actions</div>
+        <div class="card-title" style="margin-bottom:0;">Do the approved actions</div>
         <button type="button" id="execute-btn" class="btn btn-danger"
-            data-ready="{{ ready_count }}" onclick="executeConfirmed(this)"
-            {% if not ready_count %}disabled{% endif %}>
-            ▶ Execute {{ ready_count }} confirmed action{{ '' if ready_count == 1 else 's' }}
+            data-ready="{{ ready_count }}" data-unsub="{{ ready_unsub }}"
+            data-trash="{{ ready_trash }}" data-groups="{{ ready_groups }}"
+            onclick="executeConfirmed(this)"
+            {% if not ready_count or active_job %}disabled{% endif %}>
+            ▶ Do {{ ready_count }} approved action{{ '' if ready_count == 1 else 's' }}
         </button>
     </div>
-    <div class="alert alert-info">
-        Confirmed unsubscribes are sent and confirmed cleanup groups are moved to Gmail's Trash
-        (recoverable for 30 days). You can also execute from the command line:
+    <div class="progress-wrap" id="execute-progress">
+        <div class="progress"><div class="progress-fill"></div></div>
+        <div class="muted small mt-1 progress-step">Starting…</div>
     </div>
+    <div class="alert alert-info mt-2">
+        Approved newsletters get an unsubscribe request, and approved clutter is moved to Gmail's
+        Trash, where you can restore it for 30 days.
+    </div>
+    {% if not desktop %}
+    <p class="muted small mb-2">You can also execute from the command line:</p>
     <pre
         style="background:var(--surface2);padding:14px 16px;border-radius:8px;color:var(--green);font-size:13px;overflow-x:auto;border:1px solid var(--border);">python main.py execute --session {{ session_path }}</pre>
+    {% endif %}
 </div>
 {% endif %}
 {% endblock %}
@@ -269,23 +303,60 @@
       });
       location.reload();
     } catch (err) {
-      alert("Could not update: " + err.message);
+      gcToast("Could not update: " + err.message, "error");
+      btn.disabled = false;
+    }
+  }
+
+  async function selectAll(btn, confirmed) {
+    btn.disabled = true;
+    try {
+      await gcPost("/api/confirm", {
+        action_type: btn.dataset.type,
+        targets: JSON.parse(btn.dataset.targets),
+        confirmed: confirmed,
+      });
+      location.reload();
+    } catch (err) {
+      gcToast("Could not update: " + err.message, "error");
       btn.disabled = false;
     }
   }
 
   async function executeConfirmed(btn) {
-    const n = btn.dataset.ready;
-    if (!confirm("Execute " + n + " confirmed action(s)? Unsubscribes cannot be undone.")) return;
+    const unsub = Number(btn.dataset.unsub), trash = Number(btn.dataset.trash);
+    const parts = [];
+    if (unsub) parts.push("unsubscribe from " + unsub + " sender" + (unsub === 1 ? "" : "s"));
+    if (Number(btn.dataset.groups)) parts.push("move " + trash.toLocaleString() + " email" + (trash === 1 ? "" : "s") + " to Trash");
+    const body = "This will " + parts.join(" and ") + ".\n\n" +
+      "Trash is emptied by Gmail after 30 days, so you can restore moved emails until then. " +
+      "Unsubscribing can't be undone from here.";
+    const ok = await gcConfirm("Do the approved actions?", body, { okLabel: "Yes, do it", danger: true });
+    if (!ok) return;
+
     btn.disabled = true;
-    btn.textContent = "Executing…";
+    const wrap = document.getElementById("execute-progress");
+    const fill = wrap.querySelector(".progress-fill");
+    const label = wrap.querySelector(".progress-step");
+    wrap.classList.add("visible");
     try {
-      const r = await gcPost("/api/execute");
-      alert("Done — unsubscribed: " + r.unsubscribed + ", moved to Trash: " + r.trashed + ", failed: " + r.failed);
+      const started = await gcPost("/api/execute", { background: true });
+      const job = await gcPollJob(started.job_id, j => {
+        fill.style.width = Math.round((j.progress || 0) * 100) + "%";
+        label.textContent = j.step || "";
+      });
+      if (job.status === "failed") {
+        gcToast(job.error || "Something went wrong.", "error", 10000);
+      } else {
+        const r = job.result || {};
+        gcToast("Done: unsubscribed from " + r.unsubscribed + ", moved " + r.trashed +
+                " email(s) to Trash" + (r.failed ? ", " + r.failed + " failed" : "") + ".",
+                r.failed ? "warn" : "ok", 10000);
+      }
     } catch (err) {
-      alert("Execution failed: " + err.message);
+      gcToast(err.message, "error", 10000);
     }
-    location.reload();
+    setTimeout(() => location.reload(), 2000);
   }
 </script>
 {% endblock %}

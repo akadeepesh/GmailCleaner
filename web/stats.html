@@ -31,7 +31,7 @@
     </div>
     {% endfor %}
     {% if total == 0 %}
-    <p class="muted" style="font-size:13px;">No triage data yet. Enable triage in settings.yaml and run a scan.</p>
+    <p class="muted" style="font-size:13px;">No AI sorting results yet. Turn on <a href="/settings">AI sorting in Settings</a>, then run a scan.</p>
     {% endif %}
 </div>
 
@@ -63,7 +63,7 @@
     {% endfor %}
     {% else %}
     <p class="muted" style="font-size:13px;">
-        No activity data yet. Data is recorded when Pub/Sub notifications are processed.
+        No activity yet. Daily activity appears here once new mail is checked automatically.
     </p>
     {% endif %}
 </div>
@@ -93,14 +93,14 @@
     </div>
     {% endfor %}
     {% else %}
-    <p class="muted" style="font-size:13px;">No sender data yet.</p>
+    <p class="muted" style="font-size:13px;">No sender data yet: <a href="/">run a scan</a>.</p>
     {% endif %}
 </div>
 
 
 <!-- Export -->
 <div class="card">
-    <div class="card-title">Inbox Health Export</div>
+    <div class="card-title">Download my data (CSV)</div>
     <p class="muted" style="font-size:13px;margin-bottom:12px;">
         Download what GmailCleaner has recorded as CSV (metadata only — never email bodies).
     </p>

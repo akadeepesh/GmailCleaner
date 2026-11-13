@@ -1,0 +1,29 @@
+{% extends "plain.html" %}
+{% block title %}Sign-in problem — GmailCleaner{% endblock %}
+{% block content %}
+{% if reason == "no_client" %}
+<h1>Google sign-in isn't set up yet</h1>
+<p>This copy of GmailCleaner doesn't include a Google sign-in client.</p>
+<p>If you have your own <code>credentials.json</code> (a "Desktop app" OAuth client from
+Google Cloud Console), upload it under <strong>Settings → Google sign-in</strong>, then try again.</p>
+<p><a class="btn btn-primary" href="/settings#signin">Open Settings</a></p>
+{% elif reason == "denied" %}
+<h1>Sign-in was cancelled</h1>
+<p>Google didn't give GmailCleaner access. Nothing was changed. You can try again any time.</p>
+<p><a class="btn btn-primary" href="/accounts">Back to Accounts</a></p>
+{% elif reason == "scopes" %}
+<h1>Some permissions were not allowed</h1>
+<p>GmailCleaner needs all three permissions Google asks about: reading your mail (to find
+clutter), moving mail to Trash (only what you approve) and sending email (unsubscribe
+requests and your optional daily summary).</p>
+<p><a class="btn btn-primary" href="/auth/start">Try again</a></p>
+{% elif reason == "state" %}
+<h1>This sign-in link has expired</h1>
+<p>Start the sign-in again from GmailCleaner. If you didn't start a sign-in, you can close this page.</p>
+<p><a class="btn btn-primary" href="/accounts">Back to Accounts</a></p>
+{% else %}
+<h1>Sign-in didn't finish</h1>
+<p>Google sign-in couldn't be completed. Check your internet connection and try again.</p>
+<p><a class="btn btn-primary" href="/accounts">Back to Accounts</a></p>
+{% endif %}
+{% endblock %}

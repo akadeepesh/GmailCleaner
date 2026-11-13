@@ -4,20 +4,61 @@
 {% block content %}
 <div class="page-header">
     <h2>Dashboard</h2>
-    <p>Real-time inbox intelligence overview</p>
+    <p>Find newsletters and clutter in your inbox. Nothing changes until you approve it.</p>
 </div>
+
+{% if welcome %}
+<div class="card">
+    <div class="card-title">Welcome to GmailCleaner</div>
+    <div class="steps">
+        <div class="step done"><span class="num">1 ✓</span> Signed in with Google</div>
+        <div class="step"><span class="num">2</span> Run your first scan with the button below</div>
+        <div class="step"><span class="num">3</span> Review the suggestions and approve what you want</div>
+    </div>
+    <p class="muted small mt-2">Scanning only reads your mail. Nothing is unsubscribed or moved to Trash
+        until you approve it on the Pending Actions page.</p>
+</div>
+{% endif %}
+
+{% if desktop and not signed_in %}
+<div class="card">
+    <div class="card-title">Get started</div>
+    <p class="mb-3">Sign in with your Google account so GmailCleaner can look at your inbox.
+        Your email stays on this computer.</p>
+    <a href="/auth/start" class="btn btn-primary btn-lg">Sign in with Google</a>
+    <p class="muted small mt-2">Google will show a "Google hasn't verified this app" screen.
+        <a href="/help#unverified">Why, and what to click</a>.</p>
+</div>
+{% else %}
+<!-- Scan -->
+<div class="card">
+    <div class="flex-between">
+        <div>
+            <div class="card-title" style="margin-bottom:4px;">Scan</div>
+            <div class="muted small">Last scan: {{ summary.last_run | ago }}</div>
+        </div>
+        <button type="button" id="scan-btn" class="btn btn-primary btn-lg"
+            onclick="gcRunScan(this, 'scan-progress')"
+            {% if active_job %}disabled{% endif %}>🔍 Scan my inbox now</button>
+    </div>
+    <div class="progress-wrap" id="scan-progress">
+        <div class="progress"><div class="progress-fill"></div></div>
+        <div class="muted small mt-1 progress-step">Starting…</div>
+    </div>
+</div>
+{% endif %}
 
 <!-- Stat cards -->
 <div class="stats-grid">
+    <a class="stat-card" href="/pending" style="text-decoration:none;color:inherit;">
+        <div class="stat-label">Pending Actions</div>
+        <div class="stat-value" style="color: var(--yellow);">{{ suggestions }}</div>
+        <div class="stat-sub">{{ ready_count }} approved · review →</div>
+    </a>
     <div class="stat-card">
         <div class="stat-label">Needs Reply</div>
         <div class="stat-value" style="color: var(--red);">{{ summary.triage_needs_reply }}</div>
-        <div class="stat-sub">in triage DB</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-label">Pending Actions</div>
-        <div class="stat-value" style="color: var(--yellow);">{{ summary.pending_actions }}</div>
-        <div class="stat-sub">awaiting confirm</div>
+        <div class="stat-sub">{% if ai_ready %}found by AI sorting{% else %}turn on AI sorting in Settings{% endif %}</div>
     </div>
     <div class="stat-card">
         <div class="stat-label">Unsubscribed</div>
@@ -27,15 +68,15 @@
     <div class="stat-card">
         <div class="stat-label">Needs Review</div>
         <div class="stat-value" style="color: var(--purple);">{{ summary.triage_unclassified }}</div>
-        <div class="stat-sub">low confidence</div>
+        <div class="stat-sub">AI wasn't sure</div>
     </div>
 </div>
 
-<!-- Watch status -->
+{% if not desktop %}
+<!-- Watch status (Cloud Run real-time mode) -->
 <div class="card">
     <div class="card-title">Pub/Sub Watch Status</div>
     {% if watch_reg %}
-    {% set expiry_ms = watch_reg.expiration_ms | int %}
     <div class="flex flex-between">
         <div>
             <span class="badge badge-green">● Active</span>
@@ -47,10 +88,7 @@
             <span class="muted" style="font-size: 12px;">
                 Registered {{ watch_reg.registered_at[:10] }}
             </span>
-            <button type="button" class="btn btn-ghost" style="font-size: 12px; padding: 4px 10px;"
-                onclick="renewWatch(this)">
-                ↻ Renew
-            </button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="renewWatch(this)">↻ Renew</button>
         </div>
     </div>
     <div class="mt-2" style="font-size: 12px; color: var(--muted);">
@@ -63,6 +101,7 @@
     </div>
     {% endif %}
 </div>
+{% endif %}
 
 <!-- 7-day activity -->
 <div class="card">
@@ -87,34 +126,36 @@
     {% endfor %}
     {% else %}
     <p class="muted" style="font-size: 13px;">
-        No activity data yet. Activity is recorded as Pub/Sub notifications arrive.
+        No activity yet. Daily activity appears here once new mail is checked automatically.
     </p>
     {% endif %}
 </div>
 
-<!-- Quick actions -->
+<!-- Quick links -->
 <div class="card">
-    <div class="card-title">Quick Actions</div>
+    <div class="card-title">Quick Links</div>
     <div class="flex gap-3">
-        <a href="/pending" class="btn btn-primary">⏳ Review Pending</a>
-        <a href="/stats" class="btn btn-ghost">📊 View Stats</a>
+        <a href="/pending" class="btn btn-primary">⏳ Review suggestions</a>
+        <a href="/stats" class="btn btn-ghost">📊 Stats</a>
         <a href="/history" class="btn btn-ghost">🕑 Run History</a>
     </div>
-    {% if summary.last_run %}
-    <p class="muted mt-2" style="font-size: 12px;">Last run: {{ summary.last_run[:19] | replace('T', ' ') }} UTC</p>
-    {% endif %}
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+  {% if active_job and active_job.kind == 'scan' %}
+  // A scan was already running when the page loaded: show its progress.
+  gcRunScan(document.getElementById("scan-btn"), "scan-progress", {{ active_job.id | tojson }});
+  {% endif %}
+
   async function renewWatch(btn) {
     btn.disabled = true;
     try {
       await gcPost("/api/watch/renew");
       location.reload();
     } catch (err) {
-      alert("Watch renewal failed: " + err.message);
+      gcToast("Watch renewal failed: " + err.message, "error");
       btn.disabled = false;
     }
   }

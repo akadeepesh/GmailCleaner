@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Help — GmailCleaner{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Help</h2>
+    <p>Short answers to common questions.</p>
+</div>
+
+<div class="card">
+    <div class="card-title">What does each page do?</div>
+    <p class="mb-2"><strong>Dashboard</strong>: start a scan and see a summary of your inbox.</p>
+    <p class="mb-2"><strong>Pending Actions</strong>: the suggestions from your last scan.
+        "Newsletters to unsubscribe from" sends an unsubscribe request to that sender.
+        "Clutter to move to Trash" moves a group of similar emails to Gmail's Trash.
+        Nothing happens until you approve items and press "Do approved actions".</p>
+    <p class="mb-2"><strong>Stats</strong>: who sends you the most mail, and a download of your data as CSV files.</p>
+    <p class="mb-2"><strong>Run History</strong>: every scan and every time actions were carried out.</p>
+    <p class="mb-2"><strong>Accounts</strong>: add another Gmail account, switch between them, or sign out.</p>
+    <p><strong>Settings</strong>: how far back to scan, AI sorting, the daily summary email, and senders to never touch.</p>
+</div>
+
+<div class="card" id="undo">
+    <div class="card-title">How do I undo a cleanup?</div>
+    <p class="mb-2">GmailCleaner never deletes email permanently. It moves it to Gmail's <strong>Trash</strong>,
+        which keeps it for 30 days.</p>
+    <p>To get an email back: open Gmail, click <strong>Trash</strong> in the left menu (under "More"),
+        select the emails and click <strong>Move to Inbox</strong>.
+        Unsubscribing can't be undone from GmailCleaner; if you change your mind, sign up with that sender again.</p>
+</div>
+
+<div class="card" id="unverified">
+    <div class="card-title">Why does Google say "Google hasn't verified this app"?</div>
+    <p class="mb-2">Getting Google's verification costs thousands of dollars a year, and GmailCleaner is a free,
+        open-source project. The warning doesn't mean anything is wrong.</p>
+    <p class="mb-2">To continue, click <strong>Advanced</strong>, then <strong>Go to GmailCleaner (unsafe)</strong>,
+        then allow the permissions. GmailCleaner runs only on your computer: your email is never sent to the
+        GmailCleaner authors or any server of theirs.</p>
+    <p>The shared sign-in can only be used by 100 people in total. If sign-in stops working because of that,
+        you can create your own free sign-in client and upload it under Settings → Google sign-in.</p>
+</div>
+
+<div class="card" id="gemini">
+    <div class="card-title">How do I get a free Gemini key for AI sorting?</div>
+    <p class="mb-2">1. Open <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">Google AI Studio</a>
+        and sign in with your Google account.</p>
+    <p class="mb-2">2. Click <strong>Create API key</strong> and copy it.</p>
+    <p class="mb-2">3. In GmailCleaner, go to Settings → AI sorting, paste the key, click <strong>Test key</strong>,
+        then <strong>Save key</strong>.</p>
+    <p>The free tier has a daily limit. If it runs out, AI sorting is skipped for the rest of the day and
+        everything else keeps working.</p>
+</div>
+
+<div class="card" id="privacy">
+    <div class="card-title">Privacy</div>
+    <p class="mb-2">Everything GmailCleaner knows is stored on this computer. There's no account with us,
+        no tracking and no analytics.</p>
+    <p class="mb-2">GmailCleaner only talks to: Google (to read and tidy your Gmail), Google's Gemini AI if you
+        turn on AI sorting (it sends the sender, subject and a short preview, never the full email),
+        and the unsubscribe links of senders you approve.</p>
+    <p>Your Gemini key is kept in your computer's password manager. Your Google sign-in is saved in a
+        private file that only your user account can read.</p>
+</div>
+
+<div class="card">
+    <div class="card-title">Something isn't working</div>
+    <p class="mb-2"><strong>"Please sign in again"</strong>: Google ended the sign-in (for example after a
+        password change). Go to Accounts and click "Sign in again".</p>
+    <p><strong>"A scan is already running"</strong>: wait for it to finish. Only one scan per account runs at a time.</p>
+</div>
+{% endblock %}
