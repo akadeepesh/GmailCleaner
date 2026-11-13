@@ -149,13 +149,15 @@ class JobRunner:
         finally:
             with self._lock:
                 job.finished_at = _now()
-                self._threads.pop(job.id, None)
                 final = job.to_dict()
-        if on_finish is not None:
-            try:
-                on_finish(final)
-            except Exception:
-                logger.warning("on_finish callback for job %s failed", job.id, exc_info=True)
+            if on_finish is not None:
+                try:
+                    on_finish(final)
+                except Exception:
+                    logger.warning("on_finish callback for job %s failed", job.id, exc_info=True)
+            # Deregister last, so wait()/shutdown() also cover on_finish.
+            with self._lock:
+                self._threads.pop(job.id, None)
 
     def _active_for(self, account: Optional[str]) -> Optional[Job]:
         return next(
