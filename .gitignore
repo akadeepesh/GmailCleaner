@@ -48,3 +48,11 @@ bundled/oauth_client.json
 
 # Gemini key fallback file (legacy mode, when no OS keychain is available)
 config/secrets.json
+
+# Local planning notes (not published)
+docs/
+
+# Website (site/, deployed on Vercel)
+site/node_modules/
+site/.next/
+site/.vercel/
