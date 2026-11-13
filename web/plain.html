@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <title>{% block title %}GmailCleaner{% endblock %}</title>
+  {% include "_styles.html" %}
+  {% block extra_head %}{% endblock %}
+  <style>
+    body { align-items: center; justify-content: center; }
+    .plain { max-width: 520px; padding: 32px; }
+    .plain h1 { font-size: 20px; margin-bottom: 12px; }
+    .plain p { color: var(--muted); margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <div class="card plain">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

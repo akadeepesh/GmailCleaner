@@ -15,13 +15,10 @@ Global options:
     --config PATH    Use a different settings.yaml.
 """
 
-import json
 import logging
 import os
 import sys
-import uuid
-from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -42,18 +39,14 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(errors="replace")
 
 from auth.oauth import load_credentials
-from ai.gemini import GeminiClient
+from core.pipeline import FetchFailed, PipelineError, run_execute, run_scan
 from core.settings import load_config
-from engines.bulk_cleanup import BulkCleanupEngine
-from engines.digest import DigestEngine
 from engines.rules import TrustedRules
-from engines.triage import TriageEngine
-from engines.unsubscribe import UnsubscribeEngine
 from gmail.client import GmailClient
-from gmail.executor import GmailExecutor, confirmed_items, execute_report
-from gmail.fetcher import GmailFetcher
+from gmail.executor import confirmed_items
+from gmail.fetcher import GmailFetcher  # noqa: F401  (patched by tests; used via the pipeline)
 from output.exporter import export_csv
-from output.reporter import generate_report, load_pending_actions, save_pending_actions
+from output.reporter import load_pending_actions
 from store.db import Database
 from version import __version__
 
@@ -180,9 +173,6 @@ def scan(ctx: click.Context, dry_run: bool) -> None:
     cfg = ctx.obj["config"]
     _print_banner(cfg)
 
-    run_id = _make_run_id()
-    pending_path = cfg["output"]["pending_actions_path"]
-
     # ── Auth ──────────────────────────────────────────────────────────────────
     try:
         creds = load_credentials(cfg)
@@ -190,165 +180,30 @@ def scan(ctx: click.Context, dry_run: bool) -> None:
         console.print(f"[red]✗ {exc}[/red]")
         sys.exit(1)
 
-    # ── Init ──────────────────────────────────────────────────────────────────
-    client = GmailClient(creds)
-    db = Database(cfg["database"]["path"])
-    db.create_run(run_id, mode="scan")
+    def _announce_auto_execute(count: int) -> None:
+        console.print(f"  [cyan]→[/cyan] Executing {count} action(s) approved by trusted rules\n")
 
-    # ── Fetch ─────────────────────────────────────────────────────────────────
-    fetcher = GmailFetcher(
-        client=client,
-        max_emails=cfg["scan"]["max_emails"],
-        lookback_days=cfg["scan"]["lookback_days"],
-    )
     try:
-        messages = fetcher.fetch_inbox(extra_query=cfg["scan"]["query_filter"])
-    except Exception as exc:
-        logger.error("Fetch failed: %s", exc)
-        db.complete_run(run_id, emails_scanned=0, actions_pending=0,
-                        actions_executed=0, actions_failed=0)
+        result = run_scan(
+            cfg,
+            dry_run=dry_run,
+            client=GmailClient(creds),
+            on_result=_print_result,
+            on_auto_execute=_announce_auto_execute,
+        )
+    except FetchFailed:
+        sys.exit(1)  # already logged by the pipeline
+    except PipelineError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
         sys.exit(1)
 
-    if not messages:
+    if result.emails_scanned == 0:
         console.print("\n  [yellow]No messages found in the scan window.[/yellow]\n")
-        db.complete_run(run_id, emails_scanned=0, actions_pending=0,
-                        actions_executed=0, actions_failed=0)
-        return
-
-    # ── Update sender records ─────────────────────────────────────────────────
-    _update_sender_records(db, messages)
-
-    # ── Engines ───────────────────────────────────────────────────────────────
-    blocked = cfg.get("blocked_senders", [])
-
-    unsubscribe_candidates = []
-    if cfg["unsubscribe"]["enabled"]:
-        unsub_engine = UnsubscribeEngine(
-            db=db,
-            min_email_count=cfg["unsubscribe"]["min_email_count"],
-            blocked_senders=blocked,
+    elif result.auto_confirmed and dry_run:
+        console.print(
+            f"  [yellow]{result.auto_confirmed} action(s) match trusted rules and were "
+            "auto-confirmed. Re-run with --no-dry-run to execute them automatically.[/yellow]\n"
         )
-        unsubscribe_candidates = unsub_engine.get_new_candidates(messages)
-
-    cleanup_groups = []
-    if cfg["bulk_cleanup"]["enabled"]:
-        cleanup_engine = BulkCleanupEngine(
-            db=db,
-            min_group_size=cfg["bulk_cleanup"]["min_group_size"],
-            blocked_senders=blocked,
-        )
-        cleanup_groups = cleanup_engine.detect(messages)
-
-    # ── Triage engine ─────────────────────────────────────────────────────────
-    triage_summary = None
-    if cfg["triage"]["enabled"]:
-        gemini_api_key = os.getenv("GEMINI_API_KEY", "")
-        if not gemini_api_key:
-            logger.warning("Triage enabled but GEMINI_API_KEY is not set — skipping triage.")
-        else:
-            # Don't classify mail that a cleanup group already proposes to trash.
-            cleanup_claimed_ids: set[str] = set()
-            for group in cleanup_groups:
-                cleanup_claimed_ids.update(group.message_ids)
-
-            with GeminiClient(api_key=gemini_api_key, model=cfg["triage"]["model"]) as gemini:
-                triage_engine = TriageEngine(
-                    gemini_client=gemini,
-                    db=db,
-                    confidence_threshold=cfg["triage"]["confidence_threshold"],
-                )
-                triage_summary = triage_engine.classify(
-                    messages=messages,
-                    excluded_ids=cleanup_claimed_ids,
-                )
-
-    # ── Digest ────────────────────────────────────────────────────────────────
-    if cfg["digest"]["enabled"] and triage_summary is not None:
-        recipient = cfg["digest"].get("recipient") or _own_address(client)
-        if not recipient:
-            logger.warning("Digest enabled but no recipient could be determined — skipping.")
-        else:
-            DigestEngine(
-                client=client,
-                recipient=recipient,
-                dashboard_url=os.getenv("DASHBOARD_URL") or None,
-                session_path=pending_path,
-            ).send(
-                run_id=run_id,
-                emails_scanned=len(messages),
-                triage=triage_summary,
-                unsubscribe_candidates=unsubscribe_candidates,
-                cleanup_groups=cleanup_groups,
-            )
-
-    # ── Report ────────────────────────────────────────────────────────────────
-    report = generate_report(
-        run_id=run_id,
-        emails_scanned=len(messages),
-        unsubscribe_candidates=unsubscribe_candidates,
-        cleanup_groups=cleanup_groups,
-        triage_summary=triage_summary,
-        dry_run=dry_run,
-        output_path=pending_path,
-    )
-
-    # ── Log pending actions to DB ─────────────────────────────────────────────
-    for item in report["unsubscribe"]:
-        db.log_action(
-            run_id=run_id,
-            action_type="unsubscribe",
-            target=item["domain"],
-            target_meta=json.dumps({
-                "display_name": item["display_name"],
-                "email_count": item["email_count"],
-                "method": item["method"],
-            }),
-            status="pending",
-        )
-
-    for item in report["delete_groups"]:
-        db.log_action(
-            run_id=run_id,
-            action_type="delete",
-            target=item["group_id"],
-            target_meta=json.dumps({
-                "label": item["label"],
-                "email_count": item["email_count"],
-                "group_type": item["group_type"],
-            }),
-            status="pending",
-        )
-
-    # The new report replaces the previous one, so older pending rows are stale.
-    db.supersede_pending_actions(keep_run_id=run_id)
-
-    # ── Trusted rules ─────────────────────────────────────────────────────────
-    executed = failed = 0
-    rules = TrustedRules.from_config(cfg)
-    auto_confirmed = rules.apply(report) if rules.active else 0
-    if auto_confirmed:
-        if dry_run:
-            console.print(
-                f"  [yellow]{auto_confirmed} action(s) match trusted rules and were "
-                "auto-confirmed. Re-run with --no-dry-run to execute them automatically.[/yellow]\n"
-            )
-        else:
-            console.print(f"  [cyan]→[/cyan] Executing {auto_confirmed} action(s) approved by trusted rules\n")
-            with GmailExecutor(client, db) as executor:
-                summary = execute_report(executor, db, report, on_result=_print_result)
-            executed = summary.total_unsubscribed + sum(
-                1 for r in summary.delete_results if r.failed == 0
-            )
-            failed = summary.total_failed
-        save_pending_actions(report, pending_path)
-
-    db.complete_run(
-        run_id=run_id,
-        emails_scanned=len(messages),
-        actions_pending=len(report["unsubscribe"]) + len(report["delete_groups"]) - executed,
-        actions_executed=executed,
-        actions_failed=failed,
-    )
 
 
 # ── execute ───────────────────────────────────────────────────────────────────
@@ -399,15 +254,17 @@ def execute(ctx: click.Context, session: str | None, yes: bool) -> None:
         console.print(f"[red]✗ {exc}[/red]")
         sys.exit(1)
 
-    client = GmailClient(creds)
-    db = Database(cfg["database"]["path"])
-
     # ── Execute ───────────────────────────────────────────────────────────────
     try:
-        with GmailExecutor(client, db) as executor:
-            summary = execute_report(executor, db, report, on_result=_print_result)
-    finally:
-        save_pending_actions(report, session)
+        summary = run_execute(
+            cfg,
+            report_path=session,
+            client=GmailClient(creds),
+            on_result=_print_result,
+        )
+    except PipelineError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        sys.exit(1)
 
     # ── Summary ───────────────────────────────────────────────────────────────
     console.print()
@@ -435,7 +292,8 @@ def export(ctx: click.Context, out_dir: str | None) -> None:
     cfg = ctx.obj["config"]
     _print_banner(cfg)
 
-    out_dir = out_dir or str(Path("exports") / datetime.now().strftime("%Y-%m-%d"))
+    exports_root = cfg.get("output", {}).get("exports_dir") or "exports"
+    out_dir = out_dir or str(Path(exports_root) / datetime.now().strftime("%Y-%m-%d"))
     db = Database(cfg["database"]["path"])
     paths = export_csv(db, out_dir)
 
@@ -519,30 +377,6 @@ def _print_result(action_type: str, item: dict, result) -> None:
         else:
             status = f"[yellow]⚠ {result.deleted} moved, {result.failed} failed[/yellow]"
     console.print(f"  [cyan]→[/cyan] {label}  {status}")
-
-
-def _make_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
-
-
-def _update_sender_records(db: Database, messages) -> None:
-    by_domain: dict = {}
-    for msg in messages:
-        if msg.sender_domain:
-            by_domain.setdefault(msg.sender_domain, []).append(msg)
-    for domain, msgs in by_domain.items():
-        names = [m.sender_name for m in msgs if m.sender_name]
-        display_name = Counter(names).most_common(1)[0][0] if names else None
-        db.upsert_sender(domain=domain, display_name=display_name, email_count=len(msgs))
-
-
-def _own_address(client: GmailClient) -> str:
-    """The authenticated account's address — the default digest recipient."""
-    try:
-        return client.get_profile().get("emailAddress", "")
-    except Exception as exc:
-        logger.warning("Could not look up own address for digest: %s", exc)
-        return ""
 
 
 def _fmt_count(value) -> str:

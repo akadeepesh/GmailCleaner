@@ -1,0 +1,322 @@
+{% extends "base.html" %}
+{% block title %}Settings — GmailCleaner{% endblock %}
+
+{% macro toggle(key, label, checked) -%}
+<label class="toggle">
+    <input type="checkbox" data-key="{{ key }}" data-type="bool" {% if checked %}checked{% endif %}>
+    <span class="track"></span> {{ label }}
+</label>
+{%- endmacro %}
+
+{% macro number(key, label, value, min, max, step=1, hint="") -%}
+<div class="field">
+    <label for="f-{{ key }}">{{ label }}</label>
+    <input type="number" id="f-{{ key }}" data-key="{{ key }}" data-type="int"
+        value="{{ value if value is not none else '' }}" min="{{ min }}" max="{{ max }}" step="{{ step }}">
+    {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
+    <div class="error"></div>
+</div>
+{%- endmacro %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Settings</h2>
+    <p>These settings apply to all your Gmail accounts. Changes take effect on the next scan.</p>
+</div>
+
+{% if read_only %}
+<div class="alert alert-warn">
+    Settings on this server come from settings.yaml and environment variables, so they can't be changed here.
+</div>
+{% endif %}
+
+<!-- Scanning -->
+<div class="card" data-card>
+    <div class="card-title">Scanning</div>
+    <div class="field-row">
+        {{ number("scan.lookback_days", "Look back (days)", values["scan.lookback_days"], 1, 365,
+                  hint="How many days of mail each scan checks (1–365).") }}
+        {{ number("scan.max_emails", "Most emails per scan", values["scan.max_emails"], 50, 5000, 50,
+                  hint="Higher values take longer (50–5,000).") }}
+    </div>
+    <details class="advanced">
+        <summary>Advanced</summary>
+        <div class="field">
+            <label for="f-query">Gmail search filter</label>
+            <input type="text" id="f-query" data-key="scan.query_filter" data-type="str"
+                value="{{ values['scan.query_filter'] or '' }}">
+            <div class="hint">Uses Gmail search syntax. The default only looks at your inbox, never Trash or Spam.</div>
+            <div class="error"></div>
+        </div>
+    </details>
+    <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
+</div>
+
+<!-- Newsletters -->
+<div class="card" data-card>
+    <div class="card-title">Newsletters</div>
+    <div class="field">{{ toggle("unsubscribe.enabled", "Suggest newsletters to unsubscribe from", values["unsubscribe.enabled"]) }}<div class="error"></div></div>
+    {{ number("unsubscribe.min_email_count", "Only suggest a sender after this many emails",
+              values["unsubscribe.min_email_count"], 1, 100) }}
+    <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
+</div>
+
+<!-- Clutter cleanup -->
+<div class="card" data-card>
+    <div class="card-title">Clutter cleanup</div>
+    <div class="field">{{ toggle("bulk_cleanup.enabled", "Suggest groups of clutter to move to Trash", values["bulk_cleanup.enabled"]) }}<div class="error"></div></div>
+    {{ number("bulk_cleanup.min_group_size", "Smallest group to suggest (emails)",
+              values["bulk_cleanup.min_group_size"], 2, 1000) }}
+    <p class="muted small mb-3">Moved emails stay in Gmail's Trash for 30 days, so you can restore them.</p>
+    <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
+</div>
+
+<!-- AI sorting -->
+<div class="card" data-card>
+    <div class="card-title">AI sorting (optional)</div>
+    <p class="muted small mb-3">Sorts new mail into "Needs reply", "FYI", "Promotions" and "Junk" using Google's
+        free Gemini AI. Only the sender, subject and a short preview are sent, never the full email.</p>
+    <div class="field">{{ toggle("triage.enabled", "Use AI sorting", values["triage.enabled"]) }}<div class="error"></div></div>
+
+    <div class="field">
+        <label for="gemini-key">Gemini key</label>
+        <div class="muted small mb-2" id="gemini-status">
+            {% if gemini.has_key %}
+            A key is saved{% if gemini.last4 %} (ends in <code>{{ gemini.last4 }}</code>){% endif %}{% if gemini.source == 'env' %}, set by the GEMINI_API_KEY environment variable{% endif %}.
+            {% else %}No key saved yet.{% endif %}
+        </div>
+        <div class="flex gap-2">
+            <input type="password" id="gemini-key" autocomplete="off" placeholder="Paste your key here">
+            <button type="button" class="btn btn-ghost" onclick="testKey()">Test key</button>
+            <button type="button" class="btn btn-primary" onclick="saveKey()">Save key</button>
+            {% if gemini.has_key and gemini.source != 'env' %}
+            <button type="button" class="btn btn-danger" onclick="removeKey()">Remove</button>
+            {% endif %}
+        </div>
+        <div class="hint"><a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">How to get a free key</a>
+            (sign in with Google, click "Create API key", copy it here). It's stored in your computer's password manager.</div>
+    </div>
+
+    <div class="field">
+        <label for="f-conf">How sure the AI must be: <span id="conf-val">{{ ((values["triage.confidence_threshold"] or 0.75) * 100) | round | int }}%</span></label>
+        <input type="range" id="f-conf" data-key="triage.confidence_threshold" data-type="float"
+            min="0.5" max="0.99" step="0.01" value="{{ values['triage.confidence_threshold'] or 0.75 }}"
+            oninput="document.getElementById('conf-val').textContent = Math.round(this.value * 100) + '%'">
+        <div class="hint">Below this, emails go to "Needs review" instead of a guessed category.</div>
+        <div class="error"></div>
+    </div>
+    <details class="advanced">
+        <summary>Advanced</summary>
+        <div class="field">
+            <label for="f-model">AI model</label>
+            <input type="text" id="f-model" data-key="triage.model" data-type="str" value="{{ values['triage.model'] or '' }}">
+            <div class="error"></div>
+        </div>
+    </details>
+    <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
+</div>
+
+<!-- Daily summary -->
+<div class="card" data-card>
+    <div class="card-title">Daily summary email</div>
+    <div class="field">{{ toggle("digest.enabled", "Email me a summary after each scan (needs AI sorting)", values["digest.enabled"]) }}<div class="error"></div></div>
+    <div class="field">
+        <label for="f-recipient">Send to</label>
+        <input type="email" id="f-recipient" data-key="digest.recipient" data-type="str"
+            value="{{ values['digest.recipient'] or '' }}" placeholder="Leave blank to send it to yourself">
+        <div class="error"></div>
+    </div>
+    <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
+</div>
+
+<!-- Automatic actions -->
+<div class="card" data-card>
+    <div class="card-title">Automatic actions</div>
+    <div class="alert alert-warn">
+        By default GmailCleaner never does anything without asking you. If you turn this off,
+        it may unsubscribe and move mail to Trash on its own, but <strong>only</strong> for the senders
+        you list below. Senders under "Never touch" are always skipped.
+    </div>
+    <div class="field">
+        <label class="toggle">
+            <input type="checkbox" id="confirm-first" data-key="confirm_first" data-type="bool"
+                {% if values["confirm_first"] %}checked{% endif %} onchange="confirmFirstChanged(this)">
+            <span class="track"></span> Ask me before doing anything
+        </label>
+        <div class="error"></div>
+    </div>
+    <div class="field">
+        <label>Senders GmailCleaner may handle on its own</label>
+        <table data-key="trusted_rules" data-type="rules" id="rules">
+            <thead><tr><th style="width:200px;">Action</th><th>Sender domain</th><th style="width:60px;"></th></tr></thead>
+            <tbody>
+                {% for row in values["trusted_rules"] %}
+                <tr class="rule">
+                    <td><select>
+                        <option value="unsubscribe" {% if row.action == 'unsubscribe' %}selected{% endif %}>Unsubscribe</option>
+                        <option value="delete" {% if row.action == 'delete' %}selected{% endif %}>Move to Trash</option>
+                        <option value="both" {% if row.action == 'both' %}selected{% endif %}>Both</option>
+                    </select></td>
+                    <td><input type="text" value="{{ row.domain }}" placeholder="news.example.com"></td>
+                    <td><button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('tr').remove()">✕</button></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <button type="button" class="btn btn-ghost btn-sm mt-2" onclick="addRule()">+ Add a sender</button>
+        <div class="hint">Use a domain like <code>news.example.com</code>, or <code>*.example.com</code> for all its subdomains.
+            "Move to Trash" only applies to groups from that sender.</div>
+        <div class="error"></div>
+    </div>
+    <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
+</div>
+
+<!-- Never touch -->
+<div class="card" data-card>
+    <div class="card-title">Never touch</div>
+    <div class="field">
+        <label for="f-blocked">Senders GmailCleaner must always leave alone</label>
+        <textarea id="f-blocked" data-key="blocked_senders" data-type="lines"
+            placeholder="mybank.com&#10;boss@work.com">{{ values["blocked_senders"] | join("\n") }}</textarea>
+        <div class="hint">One domain or email address per line. These are never suggested or acted on.</div>
+        <div class="error"></div>
+    </div>
+    <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
+</div>
+
+<!-- Google sign-in -->
+<div class="card" id="signin">
+    <div class="card-title">Google sign-in</div>
+    <p class="mb-3">
+        {% if user_client %}Using your own Google sign-in client (credentials.json).
+        {% elif has_client %}Using GmailCleaner's built-in Google sign-in.
+        {% else %}No Google sign-in client is available. Upload your own below to sign in.{% endif %}
+    </p>
+    <details class="advanced" {% if not has_client %}open{% endif %}>
+        <summary>Advanced: use my own credentials.json</summary>
+        <p class="muted small mb-2">For people who created their own "Desktop app" OAuth client in Google Cloud Console
+            (for example, to avoid the shared 100-user limit). After uploading, sign in again on the Accounts page.</p>
+        <input type="file" id="client-file" accept=".json,application/json">
+        <button type="button" class="btn btn-primary mt-2" onclick="uploadClient()">Upload</button>
+    </details>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const READ_ONLY = {{ read_only | tojson }};
+
+  function collect(card) {
+    const changes = {};
+    card.querySelectorAll("[data-key]").forEach(el => {
+      const key = el.dataset.key, type = el.dataset.type;
+      if (type === "bool") changes[key] = el.checked;
+      else if (type === "int") changes[key] = el.value === "" ? null : Number(el.value);
+      else if (type === "float") changes[key] = Number(el.value);
+      else if (type === "lines") changes[key] = el.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      else if (type === "rules") changes[key] = [...el.querySelectorAll("tr.rule")].map(tr => ({
+          action: tr.querySelector("select").value,
+          domain: tr.querySelector("input").value.trim(),
+        })).filter(r => r.domain);
+      else changes[key] = el.value;
+    });
+    return changes;
+  }
+
+  function showErrors(card, errors) {
+    card.querySelectorAll(".field").forEach(f => f.classList.remove("has-error"));
+    Object.entries(errors || {}).forEach(([key, msg]) => {
+      const el = card.querySelector('[data-key="' + CSS.escape(key) + '"]');
+      const field = el && el.closest(".field");
+      if (field) {
+        field.classList.add("has-error");
+        field.querySelector(".error").textContent = msg;
+      } else {
+        gcToast(msg, "error");
+      }
+    });
+  }
+
+  async function saveCard(btn) {
+    if (READ_ONLY) return gcToast("Settings can't be changed on this server.", "warn");
+    const card = btn.closest("[data-card]");
+    btn.disabled = true;
+    try {
+      await gcPost("/api/settings", collect(card));
+      showErrors(card, {});
+      gcToast("Saved.", "ok", 3000);
+    } catch (err) {
+      showErrors(card, err.data && err.data.errors);
+      gcToast(err.message, "error");
+    }
+    btn.disabled = false;
+  }
+
+  async function confirmFirstChanged(box) {
+    if (box.checked) return;
+    const ok = await gcConfirm(
+      "Let GmailCleaner act on its own?",
+      "Suggestions for the senders in your list will be approved automatically, and automatic " +
+      "scans may unsubscribe and move that mail to Trash without asking. Everything else still " +
+      "waits for you.\n\nMoved emails can be restored from Gmail's Trash for 30 days.",
+      { okLabel: "Yes, turn it off", danger: true });
+    if (!ok) box.checked = true;
+  }
+
+  function addRule() {
+    const tbody = document.querySelector("#rules tbody");
+    const tr = document.createElement("tr");
+    tr.className = "rule";
+    tr.innerHTML = '<td><select><option value="unsubscribe">Unsubscribe</option>' +
+      '<option value="delete">Move to Trash</option><option value="both">Both</option></select></td>' +
+      '<td><input type="text" placeholder="news.example.com"></td>' +
+      '<td><button type="button" class="btn btn-ghost btn-sm">✕</button></td>';
+    tr.querySelector("button").onclick = () => tr.remove();
+    tbody.appendChild(tr);
+    tr.querySelector("input").focus();
+  }
+
+  async function testKey() {
+    const key = document.getElementById("gemini-key").value.trim();
+    try {
+      const r = await gcPost("/api/settings/test-gemini", key ? { key: key } : {});
+      gcToast(r.message, r.ok ? "ok" : "error", 8000);
+    } catch (err) { gcToast(err.message, "error"); }
+  }
+
+  async function saveKey() {
+    const input = document.getElementById("gemini-key");
+    const key = input.value.trim();
+    if (!key) return gcToast("Paste a key first.", "warn");
+    try {
+      await gcPost("/api/settings/gemini-key", { key: key });
+      input.value = "";
+      gcToast("Key saved.", "ok");
+      setTimeout(() => location.reload(), 800);
+    } catch (err) { gcToast(err.message, "error"); }
+  }
+
+  async function removeKey() {
+    const ok = await gcConfirm("Remove the Gemini key?", "AI sorting will be skipped until you add a key again.",
+                               { okLabel: "Remove", danger: true });
+    if (!ok) return;
+    try {
+      await gcPost("/api/settings/gemini-key", { key: null });
+      location.reload();
+    } catch (err) { gcToast(err.message, "error"); }
+  }
+
+  async function uploadClient() {
+    const file = document.getElementById("client-file").files[0];
+    if (!file) return gcToast("Choose your credentials.json file first.", "warn");
+    let client;
+    try { client = JSON.parse(await file.text()); }
+    catch (e) { return gcToast("That file isn't valid JSON.", "error"); }
+    try {
+      await gcPost("/api/settings/credentials", { client: client });
+      gcToast("Saved. Now sign in on the Accounts page.", "ok");
+      setTimeout(() => location.reload(), 1200);
+    } catch (err) { gcToast(err.message, "error", 10000); }
+  }
+</script>
+{% endblock %}

@@ -84,11 +84,12 @@
     </table>
     {% else %}
     <div class="alert alert-info">
-        No runs recorded yet. Run <code>python main.py scan</code> to generate your first report.
+        No runs recorded yet: <a href="/">run your first scan</a>.
     </div>
     {% endif %}
 </div>
 
+{% if not desktop %}
 <!-- CLI quick reference -->
 <div class="card">
     <div class="card-title">CLI Quick Reference</div>
@@ -127,5 +128,5 @@
         </tbody>
     </table>
 </div>
-
+{% endif %}
 {% endblock %}

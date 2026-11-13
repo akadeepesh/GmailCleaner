@@ -41,3 +41,10 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Desktop mode: GUI-written settings overrides and the build-time OAuth client
+config/settings.user.yaml
+bundled/oauth_client.json
+
+# Gemini key fallback file (legacy mode, when no OS keychain is available)
+config/secrets.json

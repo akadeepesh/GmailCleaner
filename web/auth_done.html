@@ -1,0 +1,10 @@
+{% extends "plain.html" %}
+{% block title %}Signed in — GmailCleaner{% endblock %}
+{% block extra_head %}
+<meta http-equiv="refresh" content="1;url={{ target }}">
+{% endblock %}
+{% block content %}
+<h1>✓ Signed in</h1>
+<p>You're signed in as <strong>{{ email }}</strong>. Taking you back to GmailCleaner…</p>
+<p class="small"><a href="{{ target }}">Continue</a></p>
+{% endblock %}

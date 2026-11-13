@@ -17,3 +17,7 @@ venv/
 htmlcov/
 .coverage
 tests/
+config/settings.user.yaml
+config/secrets.json
+bundled/
+desktop/

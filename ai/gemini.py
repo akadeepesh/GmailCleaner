@@ -88,6 +88,8 @@ class GeminiClient:
         self._batch_size = batch_size
         self._url = f"{GEMINI_API_BASE}/{self._model}:generateContent"
         self._http = httpx.Client(timeout=HTTP_TIMEOUT)
+        # Set when every retry of a request hit HTTP 429 (free-tier quota used up).
+        self.rate_limited = False
 
     def __enter__(self) -> "GeminiClient":
         return self
@@ -183,6 +185,8 @@ class GeminiClient:
                     return _extract_text(resp.json())
 
                 if resp.status_code in (429, 503):
+                    if resp.status_code == 429 and attempt == MAX_RETRIES:
+                        self.rate_limited = True
                     backoff = min(BASE_BACKOFF * (2 ** (attempt - 1)), MAX_BACKOFF)
                     jitter = random.uniform(0, backoff * 0.2)
                     wait = backoff + jitter
@@ -211,6 +215,34 @@ class GeminiClient:
 
         logger.error("Gemini: all %d attempts exhausted.", MAX_RETRIES)
         return None
+
+
+def check_api_key(api_key: str, model: str = GEMINI_MODEL, timeout: float = 10.0) -> tuple[bool, str]:
+    """
+    Check a Gemini key with one cheap metadata request (no email data is sent).
+
+    Returns:
+        (ok, message) with a plain-language message for the Settings page.
+    """
+    if not api_key:
+        return False, "No key entered."
+    try:
+        resp = httpx.get(
+            f"{GEMINI_API_BASE}/{model}",
+            headers={"x-goog-api-key": api_key},
+            timeout=timeout,
+        )
+    except httpx.HTTPError:
+        return False, "Could not reach Google. Check your internet connection."
+    if resp.status_code == 200:
+        return True, "The key works."
+    if resp.status_code == 429:
+        return True, "The key works, but today's free limit is used up. AI sorting resumes tomorrow."
+    if resp.status_code == 404:
+        return False, f"The key works, but the model {model!r} was not found. Check the model name."
+    if resp.status_code in (400, 401, 403):
+        return False, "Google rejected this key. Copy it again from AI Studio."
+    return False, f"Google returned an unexpected error (HTTP {resp.status_code})."
 
 
 # ── Prompt builder ────────────────────────────────────────────────────────────

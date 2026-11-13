@@ -93,3 +93,105 @@ class TestLocal:
         with patch.object(oauth, "get_credentials") as gc:
             oauth.load_credentials(cfg)
         gc.assert_called_once_with("a.json", "b.json")
+
+
+class TestNonInteractive:
+    def test_no_token_raises_sign_in_required(self, tmp_path):
+        with patch.object(oauth, "_run_consent_flow") as flow:
+            with pytest.raises(oauth.SignInRequired):
+                oauth.get_credentials(str(tmp_path / "c.json"), str(tmp_path / "t.json"),
+                                      interactive=False)
+        flow.assert_not_called()
+
+    def test_load_credentials_passes_flag(self):
+        cfg = {"auth": {"credentials_path": "a.json", "token_path": "b.json"}}
+        with patch.object(oauth, "get_credentials") as gc:
+            oauth.load_credentials(cfg, interactive=False)
+        gc.assert_called_once_with("a.json", "b.json", interactive=False)
+
+
+_CLIENT = {"installed": {
+    "client_id": "123-abc.apps.googleusercontent.com",
+    "client_secret": "s",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "redirect_uris": ["http://localhost"],
+}}
+
+
+class TestClientConfig:
+    @pytest.fixture(autouse=True)
+    def home(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("GOOGLE_CREDENTIALS_PATH", raising=False)
+        monkeypatch.setenv("GMAILCLEANER_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)  # no config/credentials.json here
+        monkeypatch.setattr(oauth, "resource_path", lambda rel: tmp_path / "bundle" / rel)
+        return tmp_path
+
+    def _write(self, path, data):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_none_when_missing(self):
+        assert oauth.resolve_client_config() is None
+
+    def test_lookup_order(self, home, monkeypatch):
+        def client(n):
+            return {"installed": dict(_CLIENT["installed"], client_id=f"{n}.apps.googleusercontent.com")}
+
+        self._write(home / "bundle" / "bundled" / "oauth_client.json", client("bundled"))
+        assert oauth.resolve_client_config()["installed"]["client_id"].startswith("bundled")
+        self._write(home / "config" / "credentials.json", client("dev"))
+        assert oauth.resolve_client_config()["installed"]["client_id"].startswith("dev")
+        self._write(home / "home" / "credentials.json", client("user"))
+        assert oauth.resolve_client_config()["installed"]["client_id"].startswith("user")
+        self._write(home / "env.json", client("env"))
+        monkeypatch.setenv("GOOGLE_CREDENTIALS_PATH", str(home / "env.json"))
+        assert oauth.resolve_client_config()["installed"]["client_id"].startswith("env")
+
+    def test_invalid_file_skipped(self, home):
+        self._write(home / "home" / "credentials.json", {"nope": 1})
+        self._write(home / "bundle" / "bundled" / "oauth_client.json", _CLIENT)
+        assert oauth.resolve_client_config() == _CLIENT
+
+    @pytest.mark.parametrize("bad", [
+        [], {}, {"web": _CLIENT["installed"]},
+        {"installed": {"client_id": "x"}},
+        {"installed": dict(_CLIENT["installed"], client_id="evil.example.com")},
+    ])
+    def test_upload_validation(self, bad):
+        with pytest.raises(ValueError):
+            oauth.save_user_client_config(bad)
+
+    def test_upload_saved(self, home):
+        path = oauth.save_user_client_config(_CLIENT)
+        assert path == home / "home" / "credentials.json"
+        assert json.loads(path.read_text(encoding="utf-8")) == _CLIENT
+
+
+class TestTokenHelpers:
+    def test_token_status(self, tmp_path):
+        assert oauth.token_status(str(tmp_path / "none.json")) == "needs_sign_in"
+        path = tmp_path / "t.json"
+        path.write_text(json.dumps(_TOKEN), encoding="utf-8")
+        assert oauth.token_status(str(path)) == "signed_in"
+
+    def test_save_token_atomic(self, tmp_path):
+        creds = MagicMock()
+        creds.to_json.return_value = json.dumps(_TOKEN)
+        oauth.save_token(creds, str(tmp_path / "tokens" / "a.json"))
+        assert [p.name for p in (tmp_path / "tokens").iterdir()] == ["a.json"]
+
+    def test_revoke(self, tmp_path):
+        path = tmp_path / "t.json"
+        path.write_text(json.dumps(_TOKEN), encoding="utf-8")
+        with patch.object(oauth.httpx, "post", return_value=MagicMock(status_code=200)) as post:
+            assert oauth.revoke_token(str(path)) is True
+        assert post.call_args.kwargs["data"] == {"token": "refresh"}
+
+    def test_revoke_network_error(self, tmp_path):
+        import httpx
+        path = tmp_path / "t.json"
+        path.write_text(json.dumps(_TOKEN), encoding="utf-8")
+        with patch.object(oauth.httpx, "post", side_effect=httpx.ConnectError("x")):
+            assert oauth.revoke_token(str(path)) is False

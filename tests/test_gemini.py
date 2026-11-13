@@ -303,3 +303,38 @@ class TestRetry:
         client = _make_client()
         results = client.classify_messages([])
         assert results == []
+
+# ── Desktop helpers ───────────────────────────────────────────────────────────
+
+class TestRateLimitedFlag:
+    def test_flag_set_after_exhausted_429s(self):
+        client = _make_client()
+        resp = httpx.Response(429, request=httpx.Request("POST", "https://x"))
+        with patch.object(client._http, "post", return_value=resp), patch("ai.gemini.time.sleep"):
+            assert client._post_with_retry({}) is None
+        assert client.rate_limited is True
+
+    def test_flag_clear_on_success(self):
+        client = _make_client()
+        assert client.rate_limited is False
+
+
+class TestCheckApiKey:
+    @pytest.mark.parametrize("status,ok", [(200, True), (429, True), (403, False), (400, False), (404, False), (500, False)])
+    def test_status_mapping(self, status, ok):
+        from ai.gemini import check_api_key
+        with patch("ai.gemini.httpx.get", return_value=httpx.Response(status)) as get:
+            result, message = check_api_key("AIza-key")
+        assert result is ok and message
+        # The key goes in a header, never in the URL.
+        assert "AIza-key" not in get.call_args.args[0]
+        assert get.call_args.kwargs["headers"]["x-goog-api-key"] == "AIza-key"
+
+    def test_network_error(self):
+        from ai.gemini import check_api_key
+        with patch("ai.gemini.httpx.get", side_effect=httpx.ConnectError("x")):
+            assert check_api_key("k")[0] is False
+
+    def test_empty(self):
+        from ai.gemini import check_api_key
+        assert check_api_key("")[0] is False
