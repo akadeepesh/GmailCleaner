@@ -106,14 +106,17 @@ python main.py execute
 The desktop mode runs everything from the browser: sign in with Google, scan, review, execute, change settings, add and switch Gmail accounts, and download CSVs, all without the terminal or YAML.
 
 ```bash
-pip install -r requirements.txt
-python -m desktop               # opens http://127.0.0.1:8765 in your browser
+pip install -r requirements-desktop.txt   # requirements.txt + the tray icon packages
+python -m desktop                         # opens http://127.0.0.1:8765 in your browser
 ```
 
 - **Your data lives in one folder**: `%LOCALAPPDATA%\GmailCleaner` on Windows, `~/Library/Application Support/GmailCleaner` on macOS, `~/.local/share/GmailCleaner` on Linux. Use `--home DIR` to pick another folder. Your checkout's `config/`, `data/` and `output/` are left alone.
 - **Sign-in** happens inside the dashboard. Until release builds ship with a built-in Google client, upload your own Desktop-app `credentials.json` under **Settings → Google sign-in** (or keep it in `config/credentials.json`).
 - **Settings** you change in the app are saved to `settings.user.yaml` in that folder, on top of the shipped `config/settings.yaml`. Environment variables still win. The Gemini key is stored in your OS keychain.
-- **Security**: the app listens on `127.0.0.1` only and creates a fresh secret on every launch, which the browser receives once. Bookmarks stop working after a restart; reopen the app with `python -m desktop`. Press Ctrl+C to quit.
+- **Runs by itself**: closing the browser tab leaves GmailCleaner in the system tray (Open, Scan now, Pause automatic scans, Quit). Under **Settings → Automatic scans** you can scan at a set time on the days you pick (a missed time is caught up on the next launch, within 24 hours) and check for new mail every 15–60 minutes, the desktop stand-in for Cloud Run's Pub/Sub push. Automatic scans only run while the app is open.
+- **One copy at a time**: launching it again opens the running app. `--background` starts it in the tray without opening the browser; `--no-tray` runs without a tray icon (it also falls back to that when the desktop has no tray).
+- **Security**: the app listens on `127.0.0.1` only and creates a fresh secret on every launch, which the browser receives once. Bookmarks stop working after a restart; reopen the app with `python -m desktop`. Quit from the tray, the sidebar, or with Ctrl+C.
+- **Update check**: once a day the app asks GitHub whether a newer release exists (no personal data is sent) and shows a banner. Turn it off under **Settings → App**.
 
 The CLI and the Cloud Run deployment work exactly as before.
 
