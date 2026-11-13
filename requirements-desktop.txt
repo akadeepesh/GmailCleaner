@@ -1,0 +1,8 @@
+# Desktop app dependencies (tray icon). The Docker images don't need these.
+#   pip install -r requirements-desktop.txt
+#   python -m desktop
+-r requirements.txt
+Pillow==13.0.0
+pystray==0.19.5
+python-xlib==0.33; sys_platform == "linux"
+pyobjc-framework-Quartz==13.0; sys_platform == "darwin"

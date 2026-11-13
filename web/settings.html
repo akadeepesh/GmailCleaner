@@ -184,6 +184,76 @@
     <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
 </div>
 
+{% if desktop %}
+<!-- Schedule -->
+<div class="card" data-card id="schedule">
+    <div class="card-title">Automatic scans</div>
+    <p class="muted small mb-3">Automatic scans run only while GmailCleaner is open (it keeps running in the
+        system tray when you close the browser tab). They check every signed-in account.</p>
+    {% if paused %}
+    <div class="alert alert-warn flex-between">
+        <span>Automatic scans and new-mail checks are paused.</span>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="setPaused(false)">Resume</button>
+    </div>
+    {% endif %}
+    <div class="field">{{ toggle("schedule.enabled", "Scan my inbox automatically", values["schedule.enabled"]) }}<div class="error"></div></div>
+    <div class="field-row">
+        <div class="field">
+            <label for="f-time">At</label>
+            <input type="time" id="f-time" data-key="schedule.time" data-type="str" value="{{ values['schedule.time'] }}">
+            <div class="error"></div>
+        </div>
+        <div class="field">
+            <label>On</label>
+            <div class="flex gap-2" data-key="schedule.days" data-type="days" id="f-days">
+                {% for d, label in [("mon","Mon"),("tue","Tue"),("wed","Wed"),("thu","Thu"),("fri","Fri"),("sat","Sat"),("sun","Sun")] %}
+                <label class="small"><input type="checkbox" value="{{ d }}" {% if d in values["schedule.days"] %}checked{% endif %}> {{ label }}</label>
+                {% endfor %}
+            </div>
+            <div class="error"></div>
+        </div>
+    </div>
+    <div class="field">{{ toggle("schedule.catch_up", "If GmailCleaner was closed at that time, scan when it next opens (within 24 hours)", values["schedule.catch_up"]) }}<div class="error"></div></div>
+    <div class="field">{{ toggle("schedule.run_trusted_rules", "Let automatic scans handle the senders listed under Automatic actions", values["schedule.run_trusted_rules"]) }}
+        <div class="hint">Only does anything when "Ask me before doing anything" is off. Everything else still waits for you.</div>
+        <div class="error"></div></div>
+    <div class="field">
+        <label for="f-poll">Check for new mail</label>
+        <select id="f-poll" data-key="realtime.poll_minutes" data-type="int">
+            {% set poll = values["realtime.poll_minutes"] %}
+            {% for minutes, label in [(0, "Off"), (15, "Every 15 minutes"), (30, "Every 30 minutes"), (60, "Every hour")] %}
+            <option value="{{ minutes }}" {% if poll == minutes %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+            {% if poll not in [0, 15, 30, 60] %}<option value="{{ poll }}" selected>Every {{ poll }} minutes</option>{% endif %}
+        </select>
+        <div class="hint">Spots new newsletters and sorts new mail with AI between scans. Nothing is moved or unsubscribed.</div>
+        <div class="error"></div>
+    </div>
+    <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
+    {% if not paused %}
+    <button type="button" class="btn btn-ghost" onclick="setPaused(true)">Pause for now</button>
+    {% endif %}
+</div>
+
+<!-- App -->
+<div class="card" data-card id="app">
+    <div class="card-title">App</div>
+    <div class="field">
+        <label class="toggle">
+            <input type="checkbox" id="autostart" {% if autostart.enabled %}checked{% endif %}
+                {% if not autostart.supported or read_only %}disabled{% endif %} onchange="setAutostart(this)">
+            <span class="track"></span> Start GmailCleaner when I log in
+        </label>
+        <div class="hint">{% if autostart.supported %}Starts quietly in the system tray so automatic scans can run.
+            {% else %}Available in the installed app.{% endif %}</div>
+    </div>
+    <div class="field">{{ toggle("updates.check", "Tell me when a new version is available", values["updates.check"]) }}
+        <div class="hint">Checks GitHub once a day. No personal information is sent.</div>
+        <div class="error"></div></div>
+    <button type="button" class="btn btn-primary" onclick="saveCard(this)">Save</button>
+</div>
+{% endif %}
+
 <!-- Google sign-in -->
 <div class="card" id="signin">
     <div class="card-title">Google sign-in</div>
@@ -213,6 +283,7 @@
       if (type === "bool") changes[key] = el.checked;
       else if (type === "int") changes[key] = el.value === "" ? null : Number(el.value);
       else if (type === "float") changes[key] = Number(el.value);
+      else if (type === "days") changes[key] = [...el.querySelectorAll("input:checked")].map(c => c.value);
       else if (type === "lines") changes[key] = el.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
       else if (type === "rules") changes[key] = [...el.querySelectorAll("tr.rule")].map(tr => ({
           action: tr.querySelector("select").value,
@@ -261,6 +332,24 @@
       "waits for you.\n\nMoved emails can be restored from Gmail's Trash for 30 days.",
       { okLabel: "Yes, turn it off", danger: true });
     if (!ok) box.checked = true;
+  }
+
+  async function setPaused(paused) {
+    try {
+      await gcPost("/api/schedule/pause", { paused: paused });
+      location.reload();
+    } catch (err) { gcToast(err.message, "error"); }
+  }
+
+  async function setAutostart(box) {
+    try {
+      const r = await gcPost("/api/settings/autostart", { enabled: box.checked });
+      box.checked = r.enabled;
+      gcToast(r.enabled ? "GmailCleaner will start when you log in." : "GmailCleaner won't start at log-in.", "ok");
+    } catch (err) {
+      box.checked = !box.checked;
+      gcToast(err.message, "error");
+    }
   }
 
   function addRule() {

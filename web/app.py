@@ -53,18 +53,19 @@ from flask import (
 )
 
 from auth.oauth import get_credentials
+from core import updates
 from core.jobs import JobRunner, user_message
 from core.paths import is_desktop_mode, is_headless, resource_path
 from core.pipeline import Busy, PipelineError, execution_result, run_execute, run_scan
 from core.secrets import get_gemini_key
-from engines.triage import TriageEngine
+from core.state import AppState, state_path
 from engines.unsubscribe import UnsubscribeEngine
 from gmail.client import GmailClient
 from gmail.executor import confirmed_items
 from output.exporter import DATASETS, to_csv
 from output.reporter import load_pending_actions, save_pending_actions
 from pubsub.watcher import WatchManager
-from pubsub.webhook import PubSubNotification, WebhookHandler, verify_pubsub_token
+from pubsub.webhook import PubSubNotification, WebhookHandler, build_triage_engine, verify_pubsub_token
 from version import __version__
 from web.accounts import AccountRegistry, key_for
 from web.common import (
@@ -132,6 +133,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
     accounts = AccountRegistry(config)
     app.config["ACCOUNTS"] = accounts
     app.config["JOBS"] = JobRunner()
+    # Remembered between launches in desktop mode; memory-only elsewhere.
+    app.config["STATE"] = AppState(state_path() if desktop else None)
+    app.config.setdefault("ON_QUIT", None)   # set by the desktop launcher
     _publish_default_context(app)
 
     @app.context_processor
@@ -151,6 +155,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
             "pinned": bool(reg.pinned),
             "desktop": is_desktop(),
             "headless": is_headless(),
+            "update_banner": _update_banner(app, ctx),
+            "can_quit": is_desktop() and app.config.get("ON_QUIT") is not None,
         }
 
     app.jinja_env.filters["ago"] = _ago
@@ -159,10 +165,12 @@ def create_app(config: Optional[dict] = None) -> Flask:
     _register_routes(app)
 
     from web.auth_routes import register_auth_routes
+    from web.desktop_routes import register_desktop_routes
     from web.settings_routes import register_settings_routes
 
     register_auth_routes(app)
     register_settings_routes(app)
+    register_desktop_routes(app)
     return app
 
 
@@ -174,6 +182,18 @@ def _publish_default_context(app: Flask) -> None:
     ctx = app.config["ACCOUNTS"].get(None)
     app.config["GMAILCLEANER"] = ctx.cfg
     app.config["DB"] = ctx.db
+
+
+def _update_banner(app: Flask, ctx) -> Optional[dict]:
+    """The cached "new version" banner (desktop only; never hits the network)."""
+    if not app.config.get("DESKTOP") or ctx is None:
+        return None
+    try:
+        enabled = bool((ctx.cfg.get("updates") or {}).get("check", True))
+        return updates.banner(app.config["STATE"], enabled=enabled)
+    except Exception:
+        logger.warning("Could not read the update banner", exc_info=True)
+        return None
 
 
 def invalidate_contexts(app: Flask) -> None:
@@ -411,15 +431,7 @@ def _register_routes(app: Flask) -> None:
         execute_trusted = data.get("execute_trusted", False)
         if not isinstance(execute_trusted, bool):
             return json_error("execute_trusted must be true or false", 400)
-        ctx = current_ctx()
-
-        def job(progress):
-            client = GmailClient(_credentials(ctx.cfg, interactive=False))
-            result = run_scan(ctx.cfg, dry_run=not execute_trusted, progress=progress,
-                              client=client, db=ctx.db)
-            return result.to_dict()
-
-        job_id, created = jobs().submit(ctx.name, "scan", job)
+        job_id, created = start_scan(app, current_account(), execute_trusted=execute_trusted)
         return jsonify({"job_id": job_id, "created": created}), 202
 
     # ── API: jobs ─────────────────────────────────────────────────────────────
@@ -553,6 +565,32 @@ def _register_routes(app: Flask) -> None:
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+def start_scan(
+    app: Flask,
+    account: Optional[str],
+    *,
+    execute_trusted: bool = False,
+    on_finish=None,
+) -> tuple[str, bool]:
+    """
+    Submit a scan job for an account (dashboard button, scheduler, tray).
+
+    With execute_trusted, actions matching trusted rules are carried out; the
+    rules engine only allows that when confirm_first is off.
+
+    Returns (job_id, created) as JobRunner.submit does.
+    """
+    ctx = app.config["ACCOUNTS"].get(account)
+
+    def job(progress):
+        client = GmailClient(_credentials(ctx.cfg, interactive=False))
+        result = run_scan(ctx.cfg, dry_run=not execute_trusted, progress=progress,
+                          client=client, db=ctx.db)
+        return result.to_dict()
+
+    return app.config["JOBS"].submit(ctx.name, "scan", job, on_finish=on_finish)
+
+
 def set_account_cookie(resp, key: str) -> None:
     resp.set_cookie(ACCOUNT_COOKIE, key, httponly=True, samesite="Lax",
                     max_age=365 * 24 * 3600)
@@ -599,25 +637,7 @@ def _ago(iso: Optional[str]) -> str:
     return "just now"
 
 
-def _build_triage_engine(db, cfg: dict) -> Optional[TriageEngine]:
-    """Build a TriageEngine if triage is enabled and a Gemini key is available."""
-    triage_cfg = cfg.get("triage", {})
-    if not triage_cfg.get("enabled", False):
-        return None
-    api_key = get_gemini_key()
-    if not api_key:
-        return None
-    try:
-        from ai.gemini import GEMINI_MODEL, GeminiClient
-        gemini = GeminiClient(api_key=api_key, model=triage_cfg.get("model", GEMINI_MODEL))
-        return TriageEngine(
-            gemini_client=gemini,
-            db=db,
-            confidence_threshold=triage_cfg.get("confidence_threshold", 0.75),
-        )
-    except Exception as exc:
-        logger.warning("Could not build triage engine for webhook: %s", exc)
-        return None
+_build_triage_engine = build_triage_engine  # backwards-compatible name
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -633,4 +653,4 @@ if __name__ == "__main__":
     app.run(host="127.0.0.1", port=int(os.getenv("PORT", 8080)), debug=False)
 
 
-__all__ = ["create_app", "invalidate_contexts", "set_account_cookie", "key_for", "PipelineError"]
+__all__ = ["create_app", "invalidate_contexts", "set_account_cookie", "start_scan", "key_for", "PipelineError"]

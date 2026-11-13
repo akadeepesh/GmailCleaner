@@ -23,10 +23,12 @@ from flask import Flask, jsonify, render_template, request
 from ai.gemini import GEMINI_MODEL, check_api_key
 from auth.oauth import resolve_client_config, save_user_client_config, user_client_path
 from core.paths import is_headless
+from core.scheduler import PAUSED_KEY
 from core.secrets import get_gemini_key, key_hint, set_gemini_key
 from core.settings import save_user_overrides
 from core.user_settings import SettingsValidationError, current_values
-from web.common import current_ctx, json_error, require_token
+from web.common import current_ctx, is_desktop, json_error, require_token
+from web.desktop_routes import autostart_info
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,8 @@ def register_settings_routes(app: Flask) -> None:
             read_only=is_headless(),
             user_client=user_client_path().is_file(),
             has_client=resolve_client_config() is not None,
+            paused=bool(app.config["STATE"].get(PAUSED_KEY, False)),
+            autostart=autostart_info() if is_desktop() else {"supported": False, "enabled": False},
         )
 
     @app.post("/api/settings")
