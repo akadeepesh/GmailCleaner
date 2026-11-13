@@ -41,3 +41,7 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Desktop mode: GUI-written settings overrides and the build-time OAuth client
+config/settings.user.yaml
+bundled/oauth_client.json
