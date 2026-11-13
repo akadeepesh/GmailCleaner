@@ -19,6 +19,9 @@ _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _MAX_LIST = 500
 
 RULE_ACTIONS = ("unsubscribe", "delete", "both")
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+POLL_CHOICES = (0, 15, 30, 60)   # what the Settings page offers; any 5–1440 is accepted
 
 
 class SettingsValidationError(ValueError):
@@ -46,6 +49,30 @@ def _check_recipient(value: str) -> str:
     value = value.strip()
     if value and not _EMAIL_RE.match(value.lower()):
         raise ValueError("Enter an email address, or leave it blank to send to yourself")
+    return value
+
+
+def _check_time(value: str) -> str:
+    value = value.strip()
+    if not _TIME_RE.match(value):
+        raise ValueError("Use a time like 08:00 (24-hour clock)")
+    return value
+
+
+def _check_days(values: list) -> list[str]:
+    if not all(isinstance(v, str) for v in values):
+        raise ValueError("Unknown day")
+    picked = {v.strip().lower()[:3] for v in values}
+    if not picked <= set(DAYS):
+        raise ValueError("Unknown day")
+    if not picked:
+        raise ValueError("Pick at least one day")
+    return [d for d in DAYS if d in picked]
+
+
+def _check_poll(value: int) -> int:
+    if value != 0 and value < 5:
+        raise ValueError("Use 0 (off) or at least 5 minutes")
     return value
 
 
@@ -113,6 +140,13 @@ FIELDS: dict[str, Field] = {
     "confirm_first": Field("bool"),
     "trusted_rules": Field("list", check=_check_rules),
     "blocked_senders": Field("list", check=_check_blocked),
+    "schedule.enabled": Field("bool"),
+    "schedule.time": Field("str", max_len=16, check=_check_time),
+    "schedule.days": Field("list", check=_check_days),
+    "schedule.run_trusted_rules": Field("bool"),
+    "schedule.catch_up": Field("bool"),
+    "realtime.poll_minutes": Field("int", 0, 1440, check=_check_poll),
+    "updates.check": Field("bool"),
 }
 
 
@@ -158,7 +192,7 @@ def _validate(spec: Field, value: Any) -> Any:
             raise ValueError(f"Must be at least {_fmt(spec.minimum)}")
         if spec.maximum is not None and value > spec.maximum:
             raise ValueError(f"Must be at most {_fmt(spec.maximum)}")
-        return value
+        return spec.check(value) if spec.check else value
     if spec.kind == "str":
         if not isinstance(value, str):
             raise ValueError("Must be text")
@@ -198,7 +232,22 @@ def current_values(cfg: dict) -> dict:
     values["blocked_senders"] = list(cfg.get("blocked_senders") or [])
     if values["confirm_first"] is None:
         values["confirm_first"] = True
+    for key, default in SCHEDULE_DEFAULTS.items():
+        if values[key] is None:
+            values[key] = default
     return values
+
+
+# Used when settings.yaml predates these keys (e.g. a custom --config file).
+SCHEDULE_DEFAULTS = {
+    "schedule.enabled": False,
+    "schedule.time": "08:00",
+    "schedule.days": list(DAYS),
+    "schedule.run_trusted_rules": True,
+    "schedule.catch_up": True,
+    "realtime.poll_minutes": 0,
+    "updates.check": True,
+}
 
 
 def rules_to_rows(rules: list) -> list[dict]:

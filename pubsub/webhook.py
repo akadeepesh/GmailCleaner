@@ -208,6 +208,10 @@ class WebhookHandler:
         logger.info("Webhook processing complete: %s", result)
         return result
 
+    def close(self) -> None:
+        if self._triage_engine is not None:
+            self._triage_engine.close()
+
     def _fetch_history(self, start_history_id: str) -> list:
         """
         Fetch messages added to the inbox since the given historyId.
@@ -243,6 +247,52 @@ class WebhookHandler:
                 )
                 return []
             raise
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Construction (shared by the Pub/Sub route and the desktop poller)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_triage_engine(db: Database, cfg: dict) -> Optional[TriageEngine]:
+    """A TriageEngine if triage is enabled and a Gemini key is available, else None."""
+    triage_cfg = cfg.get("triage", {})
+    if not triage_cfg.get("enabled", False):
+        return None
+    from core.secrets import get_gemini_key
+
+    api_key = get_gemini_key()
+    if not api_key:
+        return None
+    try:
+        from ai.gemini import GEMINI_MODEL, GeminiClient
+        gemini = GeminiClient(api_key=api_key, model=triage_cfg.get("model", GEMINI_MODEL))
+        return TriageEngine(
+            gemini_client=gemini,
+            db=db,
+            confidence_threshold=triage_cfg.get("confidence_threshold", 0.75),
+        )
+    except Exception as exc:
+        logger.warning("Could not build triage engine for webhook: %s", exc)
+        return None
+
+
+def build_handler(client: GmailClient, db: Database, cfg: dict) -> "WebhookHandler":
+    """
+    A WebhookHandler for one account. Call handler.close() when done (it
+    releases the triage engine, if any).
+    """
+    unsub_engine = UnsubscribeEngine(
+        db=db,
+        min_email_count=1,
+        blocked_senders=cfg.get("blocked_senders", []),
+    )
+    return WebhookHandler(
+        client=client,
+        db=db,
+        unsub_engine=unsub_engine,
+        triage_engine=build_triage_engine(db, cfg),
+        pending_actions_path=cfg["output"]["pending_actions_path"],
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
