@@ -48,6 +48,35 @@ digest:
   # Gmail account itself. Env override: DIGEST_RECIPIENT.
   recipient: ""
 
+schedule:
+  # Automatic scans in the desktop app (they run while the app is open in the
+  # tray). Cloud Run uses Cloud Scheduler instead and ignores this block.
+  enabled: false
+
+  # Local time to scan, as HH:MM (24-hour clock).
+  time: "08:00"
+
+  # Days to scan on: any of mon, tue, wed, thu, fri, sat, sun.
+  days: [mon, tue, wed, thu, fri, sat, sun]
+
+  # Let a scheduled scan carry out actions that match trusted_rules (the same
+  # as `scan --no-dry-run`). This only does anything when confirm_first is false.
+  run_trusted_rules: true
+
+  # If the app was closed at the scheduled time, scan once when it next starts
+  # (only when the missed time is less than 24 hours ago).
+  catch_up: true
+
+realtime:
+  # Desktop replacement for Pub/Sub push: check for new mail every N minutes
+  # and sort it (unsubscribe detection + AI triage). 0 = off; minimum 5.
+  poll_minutes: 0
+
+updates:
+  # Check GitHub once a day for a newer GmailCleaner release and show a banner.
+  # Sends no personal data. Desktop app only.
+  check: true
+
 pubsub:
   # Full Pub/Sub topic for real-time notifications, e.g.
   # "projects/<project-id>/topics/gmail-cleaner-notifications".

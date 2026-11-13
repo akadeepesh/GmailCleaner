@@ -55,9 +55,18 @@ class JobRunner:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def submit(self, account: Optional[str], kind: str, fn: JobFn) -> tuple[str, bool]:
+    def submit(
+        self,
+        account: Optional[str],
+        kind: str,
+        fn: JobFn,
+        on_finish: Optional[Callable[[dict], None]] = None,
+    ) -> tuple[str, bool]:
         """
         Start fn in the background for an account.
+
+        on_finish, if given, is called with the job's final state (done or
+        failed) from the job's thread. It is not called for a rejected duplicate.
 
         Returns:
             (job_id, created). created is False when the account already had a
@@ -70,7 +79,7 @@ class JobRunner:
             job = Job(id=uuid.uuid4().hex[:12], account=account, kind=kind)
             self._jobs[job.id] = job
             thread = threading.Thread(
-                target=self._run, args=(job, fn), name=f"gc-job-{kind}-{job.id}", daemon=True
+                target=self._run, args=(job, fn, on_finish), name=f"gc-job-{kind}-{job.id}", daemon=True
             )
             self._threads[job.id] = thread
             self._prune()
@@ -115,7 +124,7 @@ class JobRunner:
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
-    def _run(self, job: Job, fn: JobFn) -> None:
+    def _run(self, job: Job, fn: JobFn, on_finish: Optional[Callable[[dict], None]] = None) -> None:
         def progress(step: str, fraction: float) -> None:
             with self._lock:
                 job.step = step
@@ -140,6 +149,14 @@ class JobRunner:
         finally:
             with self._lock:
                 job.finished_at = _now()
+                final = job.to_dict()
+            if on_finish is not None:
+                try:
+                    on_finish(final)
+                except Exception:
+                    logger.warning("on_finish callback for job %s failed", job.id, exc_info=True)
+            # Deregister last, so wait()/shutdown() also cover on_finish.
+            with self._lock:
                 self._threads.pop(job.id, None)
 
     def _active_for(self, account: Optional[str]) -> Optional[Job]:

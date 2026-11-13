@@ -56,11 +56,21 @@
 
   <div class="sidebar-footer">
     <p>{{ now }}</p>
+    {% if can_quit %}
+    <button type="button" class="btn btn-ghost btn-sm mt-2" onclick="gcQuit(false)">Quit GmailCleaner</button>
+    {% endif %}
   </div>
 </aside>
 
 <!-- Main -->
 <main class="main">
+  {% if update_banner %}
+  <div class="alert alert-info flex-between" id="update-banner">
+    <span>A new version of GmailCleaner ({{ update_banner.version }}) is available.
+      <a href="{{ update_banner.url }}" target="_blank" rel="noopener noreferrer">Download it</a></span>
+    <button type="button" class="btn btn-ghost btn-sm" onclick="gcDismissUpdate()">Not now</button>
+  </div>
+  {% endif %}
   {% block content %}{% endblock %}
 </main>
 
@@ -188,6 +198,37 @@
     }
     if (btn) btn.disabled = false;
     wrap.classList.remove("visible");
+  }
+
+  async function gcDismissUpdate() {
+    try {
+      await gcPost("/api/updates/dismiss", {});
+      document.getElementById("update-banner").remove();
+    } catch (err) { gcToast(err.message, "error"); }
+  }
+
+  // Quit the desktop app. If a scan is running, ask first.
+  async function gcQuit(force) {
+    try {
+      await gcPost("/api/app/quit", { force: !!force });
+    } catch (err) {
+      if (err.data && err.data.running && !force) {
+        const ok = await gcConfirm("A scan is running. Quit anyway?",
+          "GmailCleaner will wait up to 30 seconds for it to finish, then stop it. " +
+          "You can run the scan again later.", { okLabel: "Quit anyway", danger: true });
+        if (ok) return gcQuit(true);
+        return;
+      }
+      return gcToast(err.message, "error");
+    }
+    document.body.innerHTML = '<main class="main"><div class="card"><div class="card-title">' +
+      'GmailCleaner has quit</div><p>You can close this tab.</p></div></main>';
+  }
+
+  // The tray's Quit opens ?confirm_quit=1 when a scan is running.
+  if (new URLSearchParams(location.search).get("confirm_quit") === "1") {
+    history.replaceState(null, "", location.pathname);
+    window.addEventListener("load", () => gcQuit(false));
   }
 
   async function switchAccount(key) {

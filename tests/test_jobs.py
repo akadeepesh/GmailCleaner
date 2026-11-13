@@ -130,3 +130,33 @@ def test_module_has_no_leaking_threads(runner):
     runner.wait(job_id, 5)
     assert not runner._threads
     assert jobs_mod.ACTIVE == ("queued", "running")
+
+
+def test_on_finish_called_before_wait_returns():
+    import time
+
+    from core.jobs import JobRunner
+
+    runner = JobRunner()
+    seen = []
+
+    def slow_callback(job):
+        time.sleep(0.2)
+        seen.append(job["status"])
+
+    job_id, _ = runner.submit("a", "scan", lambda p: {"ok": True}, on_finish=slow_callback)
+    runner.wait(job_id, 5)
+    assert seen == ["done"]
+
+
+def test_on_finish_errors_are_contained():
+    from core.jobs import JobRunner
+
+    runner = JobRunner()
+
+    def bad_callback(job):
+        raise RuntimeError("boom")
+
+    job_id, _ = runner.submit("a", "scan", lambda p: None, on_finish=bad_callback)
+    assert runner.wait(job_id, 5)["status"] == "done"
+    assert runner.active("a") is None

@@ -20,6 +20,19 @@
     <p><strong>Settings</strong>: how far back to scan, AI sorting, the daily summary email, and senders to never touch.</p>
 </div>
 
+<div class="card" id="automatic">
+    <div class="card-title">How do automatic scans work?</div>
+    <p class="mb-2">Turn them on under Settings → Automatic scans and pick a time and days. GmailCleaner keeps
+        running in the system tray (near the clock) after you close the browser tab, and scans every
+        signed-in account at that time. You get a notification when it's done.</p>
+    <p class="mb-2">Scans only run while GmailCleaner is open. If your computer was off at the scheduled time,
+        GmailCleaner scans once when it next starts (if it's been less than a day). To have it open
+        automatically, turn on "Start GmailCleaner when I log in".</p>
+    <p>Automatic scans only make suggestions, unless you've turned off "Ask me before doing anything" and listed
+        senders under Automatic actions. To stop them for a while, choose <strong>Pause automatic scans</strong>
+        in the tray menu.</p>
+</div>
+
 <div class="card" id="undo">
     <div class="card-title">How do I undo a cleanup?</div>
     <p class="mb-2">GmailCleaner never deletes email permanently. It moves it to Gmail's <strong>Trash</strong>,
@@ -66,6 +79,19 @@
     <div class="card-title">Something isn't working</div>
     <p class="mb-2"><strong>"Please sign in again"</strong>: Google ended the sign-in (for example after a
         password change). Go to Accounts and click "Sign in again".</p>
-    <p><strong>"A scan is already running"</strong>: wait for it to finish. Only one scan per account runs at a time.</p>
+    <p class="mb-2"><strong>"A scan is already running"</strong>: wait for it to finish. Only one scan per account runs at a time.</p>
+    {% if desktop %}
+    <p>To report a problem, the log file helps a lot. It never contains your Google sign-in or Gemini key.
+        <button type="button" class="btn btn-ghost btn-sm" onclick="openLogs()">Open log folder</button></p>
+    {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function openLogs() {
+    try { await gcPost("/api/app/open-logs", {}); }
+    catch (err) { gcToast(err.message, "error", 10000); }
+  }
+</script>
 {% endblock %}

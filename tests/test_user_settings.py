@@ -208,3 +208,34 @@ class TestAppHomePaths:
         assert cfg["auth"]["token_path"] == "config/token.json"
         assert cfg["output"]["exports_dir"] == "exports"
         assert "file_path" not in cfg.get("logging", {})
+
+
+# ── Schedule / realtime / updates (Phase 2) ──────────────────────────────────
+
+class TestScheduleFields:
+    def test_days_normalized_and_ordered(self):
+        from core.user_settings import validate_changes
+        clean, errors = validate_changes({"schedule.days": ["Friday", "mon", "fri"]})
+        assert errors == {} and clean["schedule.days"] == ["mon", "fri"]
+
+    def test_time_trimmed(self):
+        from core.user_settings import validate_changes
+        clean, errors = validate_changes({"schedule.time": " 23:59 "})
+        assert errors == {} and clean["schedule.time"] == "23:59"
+
+    def test_poll_zero_allowed(self):
+        from core.user_settings import validate_changes
+        assert validate_changes({"realtime.poll_minutes": 0}) == ({"realtime.poll_minutes": 0}, {})
+
+    def test_defaults_when_config_lacks_keys(self):
+        from core.user_settings import current_values
+        values = current_values({})
+        assert values["schedule.enabled"] is False and values["schedule.time"] == "08:00"
+        assert values["realtime.poll_minutes"] == 0 and values["updates.check"] is True
+
+    def test_shipped_defaults(self):
+        import yaml
+        cfg = yaml.safe_load(open("config/settings.yaml", encoding="utf-8"))
+        assert cfg["schedule"]["enabled"] is False
+        assert cfg["realtime"]["poll_minutes"] == 0
+        assert cfg["updates"]["check"] is True
