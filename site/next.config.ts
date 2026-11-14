@@ -1,3 +1,4 @@
+import createMDX from "@next/mdx"
 import type { NextConfig } from "next"
 
 // Baseline security headers. The strict Content-Security-Policy is added in
@@ -13,6 +14,7 @@ const securityHeaders = [
 ]
 
 const nextConfig: NextConfig = {
+  pageExtensions: ["ts", "tsx", "md", "mdx"],
   cacheComponents: true,
   partialPrefetching: true,
   poweredByHeader: false,
@@ -29,4 +31,12 @@ const nextConfig: NextConfig = {
   },
 }
 
-export default nextConfig
+// Turbopack needs plugins named as strings (functions can't cross into Rust).
+const withMDX = createMDX({
+  options: {
+    remarkPlugins: ["remark-gfm"],
+    rehypePlugins: ["rehype-slug"],
+  },
+})
+
+export default withMDX(nextConfig)
