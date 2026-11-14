@@ -67,7 +67,7 @@ GmailCleaner is not directed at children under 13 and does not knowingly process
 
 ## Changes to this policy
 
-If this policy changes, the new version will be published in this file with a new "Last updated" date. The full history is visible in the repository's commit log.
+If this policy changes, the new version will be published in this file and at [gmailcleaner.akadeepesh.com/privacy](https://gmailcleaner.akadeepesh.com/privacy), with a new "Last updated" date. The full history is visible in the repository's commit log.
 
 ## Contact
 
