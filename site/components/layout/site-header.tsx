@@ -15,7 +15,7 @@ export function SiteHeader() {
           href="/"
           className="flex items-center gap-2.5 rounded-md font-semibold tracking-tight"
         >
-          <Logo className="size-8" />
+          <Logo eager className="size-8" />
           <span>{site.name}</span>
         </Link>
 
