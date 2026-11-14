@@ -248,6 +248,29 @@ class TestExtractText:
     def test_empty_candidates_returns_none(self):
         assert _extract_text({"candidates": []}) is None
 
+    def test_cut_off_reply_is_logged(self, caplog):
+        response = {
+            "candidates": [
+                {"content": {"parts": [{"text": "[{"}]}, "finishReason": "MAX_TOKENS"}
+            ]
+        }
+        with caplog.at_level("WARNING", logger="ai.gemini"):
+            assert _extract_text(response) == "[{"
+        assert "output token limit" in caplog.text
+
+
+class TestOutputTokenLimit:
+    def test_request_leaves_room_for_thinking_tokens(self):
+        """Thinking models spend output tokens on reasoning; 1024 cut replies off."""
+        from ai.gemini import MAX_OUTPUT_TOKENS
+
+        client = _make_client()
+        with patch.object(client, "_post_with_retry", return_value="[]") as post:
+            client._classify_batch([_make_msg()])
+        payload = post.call_args.args[0]
+        assert payload["generationConfig"]["maxOutputTokens"] == MAX_OUTPUT_TOKENS
+        assert MAX_OUTPUT_TOKENS >= 8192
+
 
 # ── HTTP retry logic ──────────────────────────────────────────────────────────
 

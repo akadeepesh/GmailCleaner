@@ -16,6 +16,27 @@ from googleapiclient.errors import HttpError
 logger = logging.getLogger(__name__)
 
 
+# Gmail reports per-user quota exhaustion as HTTP 403 with one of these
+# reasons (not only as 429), so both must be treated as "slow down and retry".
+_RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+
+
+def _is_rate_limited(exc: Any) -> bool:
+    """True for errors that mean "retry later": 429, or 403 with a rate-limit reason."""
+    if not isinstance(exc, HttpError):
+        return False
+    status = exc.resp.status
+    if status == 429:
+        return True
+    if status != 403:
+        return False
+    details = exc.error_details if isinstance(exc.error_details, list) else []
+    if any(isinstance(d, dict) and d.get("reason") in _RATE_LIMIT_REASONS for d in details):
+        return True
+    body = exc.content.decode("utf-8", errors="replace") if exc.content else ""
+    return any(reason in body for reason in _RATE_LIMIT_REASONS)
+
+
 class GmailClient:
     """
     Authenticated Gmail API client.
@@ -127,7 +148,8 @@ class GmailClient:
     ) -> list[dict[str, Any]]:
         """
         Fetch multiple messages using the Google API batch HTTP mechanism,
-        with exponential backoff retry on 429 rate-limit responses.
+        with exponential backoff retry on rate-limit responses (429, or 403
+        rateLimitExceeded when the per-minute quota runs out).
 
         Batch size is kept at 25 (well below the API max of 100) to avoid
         triggering the "Too many concurrent requests" per-user rate limit.
@@ -149,8 +171,9 @@ class GmailClient:
         BATCH_SIZE = 25
         # Polite pause between successful batches.
         INTER_BATCH_DELAY = 0.5
-        # Retry config for 429 responses.
-        MAX_RETRIES = 4
+        # Retry config for rate-limit responses. Backoff totals ~62s
+        # (2+4+8+16+32), enough for Gmail's per-minute quota window to reset.
+        MAX_RETRIES = 6
         BASE_BACKOFF = 2.0  # seconds; doubles each attempt
 
         total_chunks = (len(message_ids) + BATCH_SIZE - 1) // BATCH_SIZE
@@ -171,10 +194,7 @@ class GmailClient:
                 ):
                     def _callback(request_id: str, response: Any, exception: Any) -> None:
                         if exception:
-                            if (
-                                isinstance(exception, HttpError)
-                                and exception.resp.status == 429
-                            ):
+                            if _is_rate_limited(exception):
                                 _attempt_errors.append(request_id)
                             else:
                                 logger.warning(
@@ -204,7 +224,9 @@ class GmailClient:
                 batch.execute()
                 results.update(attempt_results)
 
-                if attempt_errors:
+                if attempt_errors and attempt == MAX_RETRIES:
+                    failed_ids = attempt_errors
+                elif attempt_errors:
                     backoff = BASE_BACKOFF * (2 ** (attempt - 1))
                     logger.warning(
                         "Rate limited on %d message(s) in batch %d/%d "

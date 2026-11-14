@@ -34,6 +34,7 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 GEMINI_MODEL = "gemini-3.5-flash"
 # Messages per Gemini request. Higher = fewer API calls but larger prompts.
 BATCH_SIZE = 20
+MAX_OUTPUT_TOKENS = 8192
 # Retry config for 429 / 503 responses.
 MAX_RETRIES = 5
 BASE_BACKOFF = 4.0   # seconds
@@ -153,7 +154,10 @@ class GeminiClient:
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.1,       # Low temperature = more deterministic classification
-                "maxOutputTokens": 1024,
+                # Thinking models (Gemini 2.5+/3.x) count their hidden reasoning
+                # against this limit. 1024 left too little room, and the JSON
+                # reply was cut off mid-array. A batch's answer itself is ~1.5k.
+                "maxOutputTokens": MAX_OUTPUT_TOKENS,
                 "responseMimeType": "application/json",
             },
         }
@@ -307,7 +311,14 @@ def _safe(s: str) -> str:
 def _extract_text(response_json: dict) -> Optional[str]:
     """Pull the text content out of a Gemini generateContent response."""
     try:
-        return response_json["candidates"][0]["content"]["parts"][0]["text"]
+        candidate = response_json["candidates"][0]
+        if candidate.get("finishReason") == "MAX_TOKENS":
+            logger.warning(
+                "Gemini stopped at the output token limit (%d); the reply is cut off "
+                "and some messages will stay unclassified.",
+                MAX_OUTPUT_TOKENS,
+            )
+        return candidate["content"]["parts"][0]["text"]
     except (KeyError, IndexError) as exc:
         logger.warning("Unexpected Gemini response structure: %s — %s", exc, str(response_json)[:200])
         return None
