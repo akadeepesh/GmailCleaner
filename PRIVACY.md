@@ -18,8 +18,7 @@ When you sign in with Google, you grant GmailCleaner these Gmail permissions:
 
 | Permission | Why the app needs it |
 |---|---|
-| `gmail.readonly`: read your email and settings | To scan your inbox and find newsletters, clutter and emails that need a reply. The app reads message metadata (sender, subject, date, labels, a short snippet and headers such as `List-Unsubscribe`). |
-| `gmail.modify`: read, compose and modify your email | To carry out actions you confirm: moving messages to Trash (where they stay recoverable for 30 days) and changing labels. The app never permanently deletes email. |
+| `gmail.modify`: read, compose and modify your email | To scan your inbox and find newsletters, clutter and emails that need a reply, the app reads message metadata (sender, subject, date, labels, a short snippet and headers such as `List-Unsubscribe`). To carry out actions you confirm, it moves messages to Trash (where they stay recoverable for 30 days) and changes labels. The app never permanently deletes email. |
 | `gmail.send`: send email on your behalf | To send your daily digest to your own inbox, and to send an unsubscribe email when a sender only supports unsubscribing by email (`mailto:`), and only for senders you confirm. |
 
 The app takes action in Gmail only when you confirm it, or when it matches a trusted rule you wrote yourself.
