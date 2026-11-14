@@ -1,10 +1,12 @@
 /**
- * Site-wide constants. SITE_URL comes from NEXT_PUBLIC_SITE_URL so moving to
- * another domain is a one-line change in Vercel. Without it, the site falls
- * back to the Vercel project's production address, then to localhost.
+ * Site-wide constants. The canonical address comes from the SITE_URL env var
+ * (set in Vercel), so moving to another domain is a one-line change. It is
+ * only read on the server at build time, so it needs no NEXT_PUBLIC_ prefix.
+ * Without it, the site falls back to the Vercel project's production address,
+ * then to localhost.
  */
 function resolveSiteUrl(): string {
-  const explicit = process.env.NEXT_PUBLIC_SITE_URL
+  const explicit = process.env.SITE_URL
   if (explicit) return explicit.replace(/\/+$/, "")
   const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL
   if (vercel) return `https://${vercel}`
