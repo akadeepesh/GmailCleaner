@@ -10,8 +10,9 @@ import hmac
 import os
 from functools import wraps
 from typing import Optional
+from urllib.parse import urlencode
 
-from flask import Flask, abort, current_app, g, jsonify, make_response, render_template, request
+from flask import Flask, abort, current_app, g, jsonify, make_response, redirect, render_template, request
 
 from core.jobs import JobRunner
 from web.accounts import LEGACY_KEY, AccountContext, AccountRegistry, name_for
@@ -124,9 +125,18 @@ def require_token(f):
                 return make_response(render_template("locked.html"), 401)
             abort(401)
 
-        response = make_response(f(*args, **kwargs))
         query_token = request.args.get("token", "")
-        if query_token and safe_equals(query_token, secret):
+        valid_query_token = bool(query_token) and safe_equals(query_token, secret)
+        if valid_query_token and request.method == "GET" and not request.path.startswith("/api/"):
+            query = urlencode([
+                (key, value)
+                for key, value in request.args.items(multi=True)
+                if key != "token"
+            ])
+            response = redirect(request.path + ("?" + query if query else ""))
+        else:
+            response = make_response(f(*args, **kwargs))
+        if valid_query_token:
             response.set_cookie(
                 TOKEN_COOKIE,
                 secret,

@@ -337,7 +337,7 @@ class TestDashboardAuth:
     def test_with_secret_correct_token_passes(self, app_with_auth):
         c = app_with_auth.test_client()
         with patch.dict(os.environ, {"DASHBOARD_SECRET": "test-secret-xyz"}):
-            resp = c.get("/?token=test-secret-xyz")
+            resp = c.get("/?token=test-secret-xyz", follow_redirects=True)
         assert resp.status_code == 200
 
     def test_with_secret_wrong_token_returns_401(self, app_with_auth):
@@ -475,3 +475,45 @@ class TestCsvExport:
     def test_stats_page_links_exports(self, client):
         resp = client.get("/stats")
         assert b"/export/senders.csv" in resp.data
+
+class TestTokenRedirect:
+    def test_login_redirect_removes_all_tokens_and_preserves_query(self, app_with_auth):
+        from urllib.parse import parse_qsl, urlsplit
+        c = app_with_auth.test_client()
+        with patch.dict(os.environ, {"DASHBOARD_SECRET": "test-secret-xyz"}):
+            resp = c.get("/pending?tag=one&token=test-secret-xyz&tag=two&token=extra&empty=")
+        assert resp.status_code == 302
+        target = urlsplit(resp.headers["Location"])
+        assert target.path == "/pending"
+        assert parse_qsl(target.query, keep_blank_values=True) == [
+            ("tag", "one"), ("tag", "two"), ("empty", "")
+        ]
+        assert "HttpOnly" in resp.headers["Set-Cookie"]
+        assert "SameSite=Strict" in resp.headers["Set-Cookie"]
+
+    def test_https_login_redirect_keeps_secure_cookie(self, app_with_auth):
+        with patch.dict(os.environ, {"DASHBOARD_SECRET": "test-secret-xyz"}):
+            resp = app_with_auth.test_client().get(
+                "/?token=test-secret-xyz", base_url="https://localhost"
+            )
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == "/"
+        assert "Secure" in resp.headers["Set-Cookie"]
+
+    def test_api_get_keeps_its_response(self, app_with_auth):
+        from web.common import require_token
+        app_with_auth.add_url_rule("/api/token-test", view_func=require_token(lambda: "api"))
+        with patch.dict(os.environ, {"DASHBOARD_SECRET": "test-secret-xyz"}):
+            resp = app_with_auth.test_client().get("/api/token-test?token=test-secret-xyz")
+        assert resp.status_code == 200
+        assert resp.data == b"api"
+
+    def test_post_keeps_its_response(self, app_with_auth):
+        from web.common import require_token
+        app_with_auth.add_url_rule(
+            "/token-post", view_func=require_token(lambda: "posted"), methods=["POST"]
+        )
+        with patch.dict(os.environ, {"DASHBOARD_SECRET": "test-secret-xyz"}):
+            resp = app_with_auth.test_client().post("/token-post?token=test-secret-xyz")
+        assert resp.status_code == 200
+        assert resp.data == b"posted"
