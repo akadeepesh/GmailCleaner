@@ -16,7 +16,7 @@ pnpm typecheck
 
 | Env var | Purpose |
 |---|---|
-| `NEXT_PUBLIC_SITE_URL` | Canonical address, e.g. `https://gmailcleaner.vercel.app`. Used for `metadataBase`, canonical URLs and the sitemap. |
+| `SITE_URL` | Canonical address, `https://gmailcleaner.akadeepesh.com`. Server-only. Used for `metadataBase`, canonical URLs and the sitemap. |
 
 `vercel.json` skips builds for commits that don't touch `site/`.
 
