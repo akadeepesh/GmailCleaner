@@ -29,7 +29,7 @@ export default function Home() {
       />
 
       <div className="mx-auto flex max-w-2xl flex-col items-center text-center">
-        <Logo className="size-16 drop-shadow-sm sm:size-20" />
+        <Logo eager className="size-16 drop-shadow-sm sm:size-20" />
 
         <p className="mt-6 text-sm font-medium tracking-wide text-muted-foreground uppercase">
           {site.name}
