@@ -8,8 +8,8 @@ Handles the full authorization lifecycle:
   - Scope validation
 
 Gmail API scopes requested:
-  - gmail.readonly  : fetch and read emails (scan)
-  - gmail.modify    : move to Trash, label (execute)
+  - gmail.modify    : read emails (scan) and move to Trash / label (execute).
+                      It includes read access, so gmail.readonly isn't needed.
   - gmail.send      : send the daily digest and mailto unsubscribes
 """
 
@@ -35,9 +35,8 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCOPES = [
-    # Read-only access to mailbox — used during scans.
-    "https://www.googleapis.com/auth/gmail.readonly",
-    # Modify labels and move to Trash — used when executing confirmed actions.
+    # Read mail (scans), modify labels and move to Trash (confirmed actions).
+    # Includes read access, so gmail.readonly is not requested separately.
     "https://www.googleapis.com/auth/gmail.modify",
     # Send the daily digest email back to the user's own inbox.
     "https://www.googleapis.com/auth/gmail.send",
