@@ -1,3 +1,4 @@
+import type { Metadata } from "next"
 import { ArrowRight, HardDrive, ShieldCheck, Undo2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { GitHubIcon } from "@/components/icons/github"
@@ -9,6 +10,11 @@ const points = [
   { icon: ShieldCheck, text: "Nothing happens until you approve it." },
   { icon: Undo2, text: "Cleanup goes to Trash, recoverable for 30 days." },
 ]
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+  openGraph: { url: "/" },
+}
 
 export default function Home() {
   return (
@@ -65,9 +71,6 @@ export default function Home() {
           </Button>
         </div>
 
-        <p className="mt-12 text-sm text-muted-foreground">
-          The full website is on its way.
-        </p>
       </div>
     </main>
   )
