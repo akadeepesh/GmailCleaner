@@ -110,7 +110,7 @@ Loads `settings.yaml` and resolves every runtime path in one place. Precedence: 
 - **Production:** `GOOGLE_TOKEN_JSON` (injected from Secret Manager) takes precedence. The authorized-user JSON already contains the client ID and secret, so no credentials file is needed. Refreshed access tokens stay in memory.
 - **Headless guard:** on Cloud Run (or with `GMAILCLEANER_HEADLESS=1`), a missing or invalid token raises a clear error instead of trying to open a browser.
 
-Scopes: `gmail.readonly`, `gmail.modify`, `gmail.send`.
+Scopes: `gmail.modify` (reading mail, labels and Trash) and `gmail.send`. `gmail.modify` includes read access, so `gmail.readonly` isn't requested.
 
 **Why OAuth and not a service account?** Service accounts cannot access a personal Gmail inbox. Domain-wide delegation applies only to Google Workspace and is out of scope.
 
