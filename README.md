@@ -222,7 +222,7 @@ SCAN_SCHEDULE="0 7 * * *" SCAN_TIMEZONE="Europe/London" \
 GCP_PROJECT_ID=my-project ./deploy/deploy_dashboard.sh
 ```
 
-Both scripts are idempotent, so re-run them to redeploy. At the end, the dashboard script prints the service URL and how to read the dashboard secret. Open `https://<service-url>/?token=<secret>` once; a secure, HttpOnly cookie keeps you signed in after that.
+Both scripts are idempotent, so re-run them to redeploy. At the end, the dashboard script prints the service URL and how to read the dashboard secret. Open `https://<service-url>/?token=<secret>` once; the dashboard redirects to a URL without the token and a secure, HttpOnly cookie keeps you signed in after that.
 
 For continuous delivery, connect [`deploy/cloudbuild.yaml`](deploy/cloudbuild.yaml) to a Cloud Build trigger on `main`. It runs the tests, builds both images and rolls them out.
 
