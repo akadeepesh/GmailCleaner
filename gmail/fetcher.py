@@ -12,10 +12,10 @@ Design decisions:
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Iterator, Optional
+from typing import Optional
 
 from gmail.client import GmailClient
-from gmail.parser import GmailMessage, METADATA_HEADERS, parse_messages
+from gmail.parser import METADATA_HEADERS, GmailMessage, parse_messages
 
 logger = logging.getLogger(__name__)
 

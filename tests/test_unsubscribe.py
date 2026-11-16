@@ -15,11 +15,8 @@ Covers:
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-import pytest
-
 from engines.unsubscribe import UnsubscribeEngine, _best_display_name, _pick_best_target
 from gmail.parser import GmailMessage, UnsubscribeTarget
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

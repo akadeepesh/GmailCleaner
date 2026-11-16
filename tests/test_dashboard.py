@@ -29,7 +29,6 @@ import pytest
 
 from web.app import create_app
 
-
 # ── App fixture ───────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -80,7 +79,7 @@ class TestHealthCheck:
         assert resp.status_code == 200
 
     def test_health_returns_ok(self, client):
-        data = resp = client.get("/health").get_json()
+        data = client.get("/health").get_json()
         assert data["status"] == "ok"
 
     def test_health_no_auth_required(self, app_with_auth):

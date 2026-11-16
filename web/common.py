@@ -12,7 +12,17 @@ from functools import wraps
 from typing import Optional
 from urllib.parse import urlencode
 
-from flask import Flask, abort, current_app, g, jsonify, make_response, redirect, render_template, request
+from flask import (
+    Flask,
+    abort,
+    current_app,
+    g,
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+)
 
 from core.jobs import JobRunner
 from web.accounts import LEGACY_KEY, AccountContext, AccountRegistry, name_for

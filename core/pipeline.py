@@ -35,7 +35,13 @@ from engines.rules import TrustedRules
 from engines.triage import TriageEngine
 from engines.unsubscribe import UnsubscribeEngine
 from gmail.client import GmailClient
-from gmail.executor import ExecutionSummary, GmailExecutor, ResultCallback, confirmed_items, execute_report
+from gmail.executor import (
+    ExecutionSummary,
+    GmailExecutor,
+    ResultCallback,
+    confirmed_items,
+    execute_report,
+)
 from gmail.fetcher import GmailFetcher
 from output.reporter import generate_report, load_pending_actions, save_pending_actions
 from store.db import Database

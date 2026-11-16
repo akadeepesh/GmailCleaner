@@ -65,7 +65,12 @@ from gmail.executor import confirmed_items
 from output.exporter import DATASETS, to_csv
 from output.reporter import load_pending_actions, save_pending_actions
 from pubsub.watcher import WatchManager
-from pubsub.webhook import PubSubNotification, WebhookHandler, build_triage_engine, verify_pubsub_token
+from pubsub.webhook import (
+    PubSubNotification,
+    WebhookHandler,
+    build_triage_engine,
+    verify_pubsub_token,
+)
 from version import __version__
 from web.accounts import AccountRegistry, key_for
 from web.common import (

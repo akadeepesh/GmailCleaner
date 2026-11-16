@@ -24,17 +24,16 @@ import pytest
 from googleapiclient.errors import HttpError
 
 from gmail.executor import (
+    DeleteResult,
     ExecutionSummary,
     GmailExecutor,
     UnsubscribeResult,
-    DeleteResult,
     confirmed_items,
     execute_report,
     find_or_create_action,
 )
 from gmail.url_guard import GuardedTransport
 from store.db import Database
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

@@ -14,8 +14,6 @@ from datetime import datetime, timezone
 import pytest
 
 from gmail.parser import (
-    GmailMessage,
-    UnsubscribeTarget,
     _extract_domain,
     _parse_address,
     _parse_internal_date,
@@ -23,7 +21,6 @@ from gmail.parser import (
     parse_message,
     parse_messages,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

@@ -15,7 +15,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generator, Optional
+from typing import TYPE_CHECKING, Generator, Optional
+
+if TYPE_CHECKING:
+    from pubsub.watcher import WatchRegistration
 
 logger = logging.getLogger(__name__)
 

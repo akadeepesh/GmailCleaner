@@ -14,7 +14,6 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from email.headerregistry import Address
 from email.utils import parseaddr
 from typing import Any, Optional
 from urllib.parse import urlparse
