@@ -16,10 +16,9 @@ Covers:
 import base64
 import email
 from email import policy as email_policy
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
+from engines.bulk_cleanup import CleanupGroup
 from engines.digest import (
     DigestEngine,
     _build_html,
@@ -27,11 +26,9 @@ from engines.digest import (
     _compose_raw,
     _esc,
 )
-from engines.triage import TriageSummary, TriageResult
+from engines.triage import TriageResult, TriageSummary
 from engines.unsubscribe import UnsubscribeCandidate
-from engines.bulk_cleanup import CleanupGroup
 from gmail.parser import UnsubscribeTarget
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

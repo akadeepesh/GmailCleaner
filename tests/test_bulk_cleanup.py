@@ -23,7 +23,6 @@ from engines.bulk_cleanup import (
 )
 from gmail.parser import GmailMessage, UnsubscribeTarget
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 def _make_msg(

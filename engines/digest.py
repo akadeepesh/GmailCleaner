@@ -25,9 +25,9 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-from engines.triage import TriageSummary, TriageResult
-from engines.unsubscribe import UnsubscribeCandidate
 from engines.bulk_cleanup import CleanupGroup
+from engines.triage import TriageResult, TriageSummary
+from engines.unsubscribe import UnsubscribeCandidate
 from gmail.client import GmailClient
 
 logger = logging.getLogger(__name__)
@@ -407,9 +407,9 @@ def _compose_raw(to: str, subject: str, html: str) -> str:
 
     # Plain-text fallback for email clients that don't render HTML.
     plain = (
-        f"GmailCleaner Daily Digest\n"
-        f"Open pending_actions.json and run: python main.py execute\n"
-        f"(This email is best viewed in an HTML-capable email client.)"
+        "GmailCleaner Daily Digest\n"
+        "Open pending_actions.json and run: python main.py execute\n"
+        "(This email is best viewed in an HTML-capable email client.)"
     )
     msg.attach(MIMEText(plain, "plain", "utf-8"))
     msg.attach(MIMEText(html, "html", "utf-8"))

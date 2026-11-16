@@ -15,21 +15,18 @@ Covers:
 """
 
 import json
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import patch
 
-import pytest
 import httpx
+import pytest
 
 from ai.gemini import (
     GeminiClient,
-    GeminiClassification,
     _build_prompt,
-    _parse_response,
-    _make_unclassified,
     _extract_text,
+    _parse_response,
     _safe,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

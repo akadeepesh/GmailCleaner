@@ -22,7 +22,15 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, abort, make_response, redirect, render_template, request, session
+from flask import (
+    Flask,
+    abort,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    session,
+)
 
 from auth.oauth import SCOPES, resolve_client_config, revoke_token, save_token
 from core.paths import is_headless

@@ -38,10 +38,10 @@ from typing import Optional
 
 from googleapiclient.errors import HttpError
 
+from engines.triage import TriageEngine
+from engines.unsubscribe import UnsubscribeEngine
 from gmail.client import GmailClient
 from gmail.parser import METADATA_HEADERS, parse_messages
-from engines.unsubscribe import UnsubscribeEngine
-from engines.triage import TriageEngine
 from output.reporter import merge_unsubscribe_candidates
 from store.db import Database
 
@@ -326,8 +326,8 @@ def verify_pubsub_token(
     token = authorization_header.split(" ", 1)[1]
 
     try:
-        from google.oauth2 import id_token
         from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token
         claims = id_token.verify_oauth2_token(
             token,
             google_requests.Request(),

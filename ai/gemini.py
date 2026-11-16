@@ -19,10 +19,10 @@ of 500 emails uses ~25 API calls (500 / 20 per batch).
 import json
 import logging
 import os
-import time
 import random
+import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 import httpx
 

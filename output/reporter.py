@@ -17,15 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich import box
-from rich.text import Text
 
-from engines.unsubscribe import UnsubscribeCandidate
 from engines.bulk_cleanup import CleanupGroup
 from engines.triage import TriageSummary
+from engines.unsubscribe import UnsubscribeCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -420,8 +419,8 @@ def _build_triage_section(triage_summary: Optional["TriageSummary"]) -> dict:
 
 def _print_triage_summary(summary: dict) -> None:
     """Print a compact triage bucket summary to the console."""
-    from rich.table import Table
     from rich import box
+    from rich.table import Table
 
     needs_reply = summary.get("needs_reply", [])
     fyi = summary.get("fyi", [])

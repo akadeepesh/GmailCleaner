@@ -4,8 +4,6 @@ Tests for store/db.py
 Uses a temp file for the SQLite DB per test function to ensure isolation.
 """
 
-import tempfile
-from datetime import timezone
 from pathlib import Path
 
 import pytest
@@ -116,7 +114,7 @@ class TestActionLog:
     def test_schema_initialised_idempotently(self, tmp_path: Path):
         """Creating a second Database on the same file should not fail."""
         path = str(tmp_path / "idempotent.db")
-        db1 = Database(path)
+        Database(path)
         db2 = Database(path)  # Should not raise
         db2.upsert_sender("x.com", "X", 1)
         assert db2.get_sender("x.com") is not None

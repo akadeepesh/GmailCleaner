@@ -14,14 +14,17 @@ Covers:
 """
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from engines.triage import TriageEngine, TriageSummary, TriageResult, _build_summary, _to_metadata
 from ai.gemini import GeminiClassification, GeminiClient
+from engines.triage import (
+    TriageEngine,
+    TriageResult,
+    TriageSummary,
+    _build_summary,
+    _to_metadata,
+)
 from gmail.parser import GmailMessage
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -128,7 +131,7 @@ class TestTriageEngine:
     def test_excluded_ids_not_sent_to_gemini(self):
         msgs = [_make_msg("m1"), _make_msg("m2")]
         engine, gemini, db = _make_engine([_make_classification("m2", "FYI", 0.9)])
-        summary = engine.classify(msgs, excluded_ids={"m1"})
+        engine.classify(msgs, excluded_ids={"m1"})
         # Gemini called with only m2
         call_args = gemini.classify_messages.call_args[0][0]
         assert all(m["message_id"] != "m1" for m in call_args)

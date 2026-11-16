@@ -17,12 +17,11 @@ Covers:
 
 import base64
 import json
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from pubsub.webhook import PubSubNotification, WebhookHandler, verify_pubsub_token
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -158,7 +157,6 @@ class TestWebhookHandler:
 
     def test_new_messages_processed(self):
         from gmail.parser import GmailMessage
-        from datetime import datetime, timezone
 
         msg = MagicMock(spec=GmailMessage)
         msg.id = "m1"

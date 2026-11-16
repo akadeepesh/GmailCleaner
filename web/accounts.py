@@ -27,7 +27,13 @@ from typing import Optional
 from auth.oauth import token_status
 from core.fsutil import atomic_write_text
 from core.paths import app_home
-from core.settings import _ACCOUNT_RE, deep_merge, load_config, load_user_overrides, resolve_config
+from core.settings import (
+    _ACCOUNT_RE,
+    deep_merge,
+    load_config,
+    load_user_overrides,
+    resolve_config,
+)
 from store.db import Database
 
 LEGACY_KEY = "_default"          # leading "_" is not a valid account name
