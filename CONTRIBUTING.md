@@ -20,6 +20,8 @@ python -m pytest
 
 The test suite needs no Google account, network access or credentials: every Gmail, Gemini and HTTP call is mocked.
 
+Run `ruff check .` before opening a pull request.
+
 ## Ground rules
 
 These protect users' inboxes and privacy. Changes that break them won't be merged.

@@ -22,6 +22,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
       - run: pip install -r requirements-dev.txt
+      - run: ruff check .
       - run: python -m pytest tests/ -q --tb=short
 
   docker:

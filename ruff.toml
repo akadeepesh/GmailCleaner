@@ -1,0 +1,10 @@
+target-version = "py311"
+extend-exclude = ["site", ".venv", "build", "dist"]
+
+[lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+# The CLI loads .env and prepares its import path and console before app imports.
+"main.py" = ["E402"]
