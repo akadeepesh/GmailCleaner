@@ -1,31 +1,27 @@
 version: 2
+
+# One combined PR per month across all ecosystems instead of one PR per package.
+# Security updates still open on their own as soon as an advisory lands.
+multi-ecosystem-groups:
+  all-dependencies:
+    schedule:
+      interval: "monthly"
+
 updates:
   - package-ecosystem: "pip"
     directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      pip-minor-patch:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
+    patterns: ["*"]
+    multi-ecosystem-group: "all-dependencies"
+    open-pull-requests-limit: 1
 
   - package-ecosystem: "npm"
     directory: "/site"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      site-minor-patch:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
+    patterns: ["*"]
+    multi-ecosystem-group: "all-dependencies"
+    open-pull-requests-limit: 1
 
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "monthly"
-    open-pull-requests-limit: 5
-    groups:
-      actions-minor-patch:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
+    patterns: ["*"]
+    multi-ecosystem-group: "all-dependencies"
+    open-pull-requests-limit: 1
